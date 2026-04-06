@@ -1,0 +1,606 @@
+#![allow(missing_docs)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::io_other_error)]
+#![allow(clippy::manual_flatten)]
+#![allow(clippy::result_large_err)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+//! Sibna Universal Server
+//!
+//! Transports:
+//!   - REST (HTTP) — prekey operations + auth
+//!   - WebSocket — real-time sealed-envelope relay
+//!
+//! Security:
+//!   - Ed25519 identity binding
+//!   - JWT challenge-response auth
+//!   - Hybrid rate limiting (IP + Identity)
+//!   - Bundle replay protection (bundle_id dedup)
+//!   - Sealed Sender (server never sees sender)
+//!   - Offline message queue (7-day TTL, sled)
+//!   - Zero-Reuse prekey compaction
+
+mod auth;
+mod ws;
+
+use axum::{
+    extract::{Path, State, ConnectInfo, FromRef},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{delete, get, post},
+    Json, Router,
+};
+use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
+use sibna_core::rate_limit::RateLimiter;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+use tower_http::{
+    cors::{Any, CorsLayer},
+    limit::RequestBodyLimitLayer,
+    trace::TraceLayer,
+};
+use tracing::{info, warn};
+
+// Shared application state
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: Arc<DbState>,
+    pub rt: Arc<RuntimeState>,
+}
+
+pub struct DbState {
+    pub sled: sled::Db,
+    pub tree_prekeys: sled::Tree,
+    pub tree_dedup: sled::Tree,
+    pub tree_queue: sled::Tree,
+    pub tree_challenges: sled::Tree,
+}
+
+pub struct RuntimeState {
+    pub limiter: Arc<RateLimiter>,
+    /// Connected WebSocket clients: identity_key_hex → sender channel
+    pub clients: DashMap<String, ws::ClientTx>,
+    /// JWT signing secret (from env or random on startup)
+    pub jwt_secret: String,
+}
+
+/// Centralized Auth Extractor — ensures MUST-BE-AUTHENTICATED for protected routes.
+pub struct AuthUser(pub auth::Claims);
+
+#[axum::async_trait]
+impl<S> axum::extract::FromRequestParts<S> for AuthUser
+where
+    S: Send + Sync,
+    AppState: axum::extract::FromRef<S>,
+{
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+        let auth_header = parts.headers.get(axum::http::header::AUTHORIZATION)
+            .ok_or((StatusCode::UNAUTHORIZED, "Missing Authorization header"))?;
+        
+        let auth_str = auth_header.to_str().map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid Authorization header"))?;
+        let token = auth_str.strip_prefix("Bearer ").ok_or((StatusCode::UNAUTHORIZED, "Invalid Token Format"))?;
+        
+        match auth::validate_jwt(token, &app_state.rt.jwt_secret) {
+            Some(claims) => Ok(AuthUser(claims)),
+            None => Err((StatusCode::UNAUTHORIZED, "Invalid or expired token")),
+        }
+    }
+}
+
+// Entry point
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+
+    // Database
+    let db_path = std::env::var("SIBNA_DB_PATH")
+        .unwrap_or_else(|_| "sibna_server_db".to_string());
+    let db = match sled::open(&db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("CRITICAL: Failed to open sled database at {}: {}", db_path, e);
+            std::process::exit(1);
+        }
+    };
+    info!("Database opened at '{}'", db_path);
+
+    // OPEN TREES ONCE - Performance & Integrity Fix
+    let tree_prekeys = db.open_tree("prekeys").expect("Failed to open prekeys tree");
+    let tree_dedup = db.open_tree("msg_dedup").expect("Failed to open dedup tree");
+    let tree_queue = db.open_tree("msg_queue").expect("Failed to open queue tree");
+    let tree_challenges = db.open_tree("auth_challenges").expect("Failed to open challenges tree");
+
+    // JWT secret (set SIBNA_JWT_SECRET in env for production)
+    let jwt_secret = Arc::new(
+        std::env::var("SIBNA_JWT_SECRET")
+            .unwrap_or_else(|_| {
+                warn!("SIBNA_JWT_SECRET not set — generating ephemeral secret (restarts invalidate tokens!)");
+                hex::encode(random_bytes_32())
+            })
+    );
+
+    // Rate limiter — separate limits per operation
+    let mut limiter = RateLimiter::new();
+    limiter.set_global_enabled(true);
+    limiter.set_global_rps(5000);
+
+    let prekey_limit = sibna_core::rate_limit::OperationLimit {
+        max_per_second: 50,
+        max_per_minute: 500,
+        max_per_hour: 10_000,
+        max_per_day: 100_000,
+        cooldown: Duration::from_secs(1),
+        burst_size: 20,
+    };
+    let tight_limit = sibna_core::rate_limit::OperationLimit {
+        max_per_second: 5,
+        max_per_minute: 30,
+        max_per_hour: 300,
+        max_per_day: 3_000,
+        cooldown: Duration::from_secs(10),
+        burst_size: 3,
+    };
+
+    limiter.add_limit("prekey_upload".to_string(), prekey_limit.clone());
+    limiter.add_limit("prekey_fetch".to_string(), prekey_limit);
+    limiter.add_limit("auth_challenge".to_string(), tight_limit.clone());
+    limiter.add_limit("auth_prove".to_string(), tight_limit);
+    limiter.add_limit("inbox_fetch".to_string(), sibna_core::rate_limit::OperationLimit {
+        max_per_second: 10,
+        max_per_minute: 100,
+        max_per_hour: 1_000,
+        max_per_day: 10_000,
+        cooldown: Duration::from_secs(2),
+        burst_size: 5,
+    });
+    // FIX: Dedicated rate limit for message sending (was incorrectly using prekey_upload limit)
+    limiter.add_limit("message_send".to_string(), sibna_core::rate_limit::OperationLimit {
+        max_per_second: 20,
+        max_per_minute: 300,
+        max_per_hour: 5_000,
+        max_per_day: 50_000,
+        cooldown: Duration::from_secs(1),
+        burst_size: 10,
+    });
+
+    let db_state = Arc::new(DbState {
+        sled: db,
+        tree_prekeys,
+        tree_dedup,
+        tree_queue,
+        tree_challenges,
+    });
+
+    let rt_state = Arc::new(RuntimeState {
+        limiter: Arc::new(limiter),
+        clients: DashMap::new(),
+        jwt_secret: (*jwt_secret).clone(),
+    });
+
+    let state = AppState {
+        db: db_state,
+        rt: rt_state,
+    };
+
+    // Router
+    let app = Router::new()
+        .route("/health", get(health_handler))
+        .route("/v1/auth/challenge", post(auth::challenge_handler))
+        .route("/v1/auth/prove", post(auth::prove_handler))
+        .route("/v1/prekeys/upload", post(upload_prekey_handler))
+        .route("/v1/prekeys/:user_id", get(fetch_prekey_handler))
+        .route("/v1/prekeys/:user_id", delete(delete_prekey_handler))
+        .route("/v1/messages/send", post(send_message_handler))
+        .route("/v1/messages/inbox", get(inbox_handler))
+        .route("/ws", get(ws::ws_handler))
+
+        .layer(TraceLayer::new_for_http())
+        .layer(RequestBodyLimitLayer::new(64 * 1024)) // 64 KB max body
+        // FIX: CORS was set to allow ANY origin, which exposes the API to
+        // cross-origin requests from any website. Restrict to known origins in
+        // production via SIBNA_ALLOWED_ORIGINS (comma-separated list).
+        // Falls back to Any only when the env var is unset (dev mode).
+        .layer({
+            let origins_env = std::env::var("SIBNA_ALLOWED_ORIGINS").unwrap_or_default();
+            let parsed: Vec<axum::http::HeaderValue> = origins_env
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if parsed.is_empty() {
+                warn!("SIBNA_ALLOWED_ORIGINS not set — CORS is open (dev mode only!)");
+                CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any)
+            } else {
+                CorsLayer::new()
+                    .allow_origin(parsed)
+                    .allow_headers(Any)
+                    .allow_methods(Any)
+            }
+        })
+        .with_state(state.clone());
+
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse().unwrap_or(8080);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    info!("Sibna Server listening on {}", addr);
+    info!("Transports: REST + WebSocket");
+    info!("Auth: Ed25519 Challenge-Response / JWT");
+
+    // Background task: prune the dedup tree every hour.
+    // Without pruning it grows unboundedly — every unique message_id ever seen
+    // stays in sled forever, turning the tree into a persistent memory leak.
+    // We store a timestamp alongside the "1" sentinel and delete entries older
+    // than 48 hours (well past any realistic replay window).
+    {
+        let db_prune = state.db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                {
+                let tree = &db_prune.tree_dedup;
+                    let cutoff = chrono::Utc::now().timestamp() - 48 * 3600;
+                    let mut to_delete = Vec::new();
+                    for item in tree.iter() {
+                        if let Ok((key, value)) = item {
+                            let mut mark_delete = false;
+
+                            // 1. Check legacy/string format: b"ts:<unix_timestamp>" or b"1"
+                            if let Ok(s) = std::str::from_utf8(&value) {
+                                if let Some(ts_str) = s.strip_prefix("ts:") {
+                                    if let Ok(ts) = ts_str.parse::<i64>() {
+                                        if ts < cutoff { mark_delete = true; }
+                                    }
+                                } else if s == "1" {
+                                    mark_delete = true;
+                                }
+                            } 
+                            // 2. Check new binary format: i64 (8 bytes)
+                            else if value.len() == 8 {
+                                let mut b = [0u8; 8];
+                                b.copy_from_slice(&value);
+                                let ts = i64::from_be_bytes(b);
+                                if ts < cutoff { mark_delete = true; }
+                            }
+
+                            if mark_delete {
+                                to_delete.push(key);
+                            }
+                        }
+                    }
+                    let pruned = to_delete.len();
+                    for key in to_delete {
+                        tree.remove(key).ok();
+                    }
+                    if pruned > 0 {
+                        tracing::info!("DEDUP_PRUNE: removed {} expired entries", pruned);
+                    }
+                }
+            }
+        });
+    }
+
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("CRITICAL: Failed to bind to {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await {
+        eprintln!("CRITICAL: Server error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+// Helpers
+
+fn generate_rate_key(ip: &SocketAddr, identity: &str) -> String {
+    // V8 FIX: DefaultHasher is NOT collision-resistant and is not stable across
+    // processes/versions. Two different (IP, identity) pairs can collide and share
+    // a rate-limit bucket, allowing one identity to exhaust another's quota.
+    // Use plain concatenation with a separator instead — the RateLimiter stores
+    // entries in a HashMap and does its own hashing internally.
+    format!("{}|{}", ip.ip(), identity)
+}
+
+fn enforce_rate_limit(
+    limiter: &RateLimiter,
+    operation: &str,
+    ip: &SocketAddr,
+    identity: &str,
+) -> Result<(), axum::response::Response> {
+    let key = generate_rate_key(ip, identity);
+    if let Err(e) = limiter.check(operation, &key) {
+        warn!("Rate limit exceeded for {} ({}): {}", operation, &identity[..identity.len().min(16)], e);
+        return Err((StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response());
+    }
+    Ok(())
+}
+
+fn random_bytes_32() -> [u8; 32] {
+    use rand::RngCore;
+    let mut b = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut b);
+    b
+}
+
+// Handlers
+
+async fn health_handler() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({
+        "status": "ok",
+        "version": "3.0.0",
+        "transports": ["http", "websocket"],
+        "auth": "ed25519-jwt"
+    })))
+}
+
+// PreKey Upload
+
+#[derive(Deserialize)]
+struct UploadPrekeyRequest {
+    bundle_hex: String,
+    is_last_resort: Option<bool>,
+}
+
+async fn upload_prekey_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    AuthUser(claims): AuthUser,
+    State(state): State<AppState>,
+    Json(payload): Json<UploadPrekeyRequest>,
+) -> impl IntoResponse {
+    if let Err(r) = enforce_rate_limit(&state.rt.limiter, "prekey_upload", &addr, &claims.sub) {
+        return r;
+    }
+
+    let bundle_bytes = match hex::decode(&payload.bundle_hex) {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid hex encoding").into_response(),
+    };
+
+    let bundle = match sibna_core::handshake::PreKeyBundle::from_bytes(&bundle_bytes) {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Malformed PreKeyBundle").into_response(),
+    };
+
+    if let Err(e) = bundle.validate() {
+        return (StatusCode::BAD_REQUEST, format!("Invalid bundle: {:?}", e)).into_response();
+    }
+
+    let root_id = hex::encode(&bundle.root_identity_key);
+    let db_key = if payload.is_last_resort.unwrap_or(false) {
+        format!("prekey_resort:{}", root_id)
+    } else {
+        format!("{}:{}", root_id, bundle.device_id)
+    };
+
+    if let Err(r) = enforce_rate_limit(&state.rt.limiter, "prekey_upload", &addr, &root_id) {
+        return r;
+    }
+    if let Ok(Some(existing)) = state.db.tree_prekeys.get(&db_key) {
+        if let Ok(existing_bundle) = sibna_core::handshake::PreKeyBundle::from_bytes(&existing) {
+            if bundle.bundle_id == existing_bundle.bundle_id {
+                return (StatusCode::CONFLICT, "Replay attack detected: bundle_id reused").into_response();
+            }
+        }
+    }
+
+    if state.db.tree_prekeys.insert(db_key.as_bytes(), bundle_bytes).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    info!("PreKey uploaded for Root {} Device {}", &root_id[..16], bundle.device_id);
+    StatusCode::OK.into_response()
+}
+
+// PreKey Fetch
+
+#[derive(Serialize)]
+struct FetchPrekeyResponse {
+    bundles_hex: Vec<String>,
+}
+
+async fn fetch_prekey_handler(
+    Path(root_id): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if let Err(r) = enforce_rate_limit(&state.rt.limiter, "prekey_fetch", &addr, &root_id) {
+        return r;
+    }
+
+    let prefix = format!("{}:", root_id);
+    let resort_key = format!("prekey_resort:{}", root_id);
+    
+    let mut fetched_bundles_hex = Vec::new();
+    let mut keys_to_delete = Vec::new();
+
+    // 1. Try fetching standard One-Time Prekeys
+    for item in state.db.tree_prekeys.scan_prefix(prefix.as_bytes()) {
+        if let Ok((key, bundle_bytes)) = item {
+            if let Ok(bundle) = sibna_core::handshake::PreKeyBundle::from_bytes(&bundle_bytes) {
+                if bundle.validate().is_ok() {
+                    fetched_bundles_hex.push(hex::encode(&*bundle_bytes));
+                }
+            }
+            keys_to_delete.push(key);
+        }
+    }
+
+    // 2. PILLAR 2: If no one-time keys are available, fallback to Last Resort Key
+    let mut using_resort = false;
+    if fetched_bundles_hex.is_empty() {
+        if let Ok(Some(resort_bytes)) = state.db.tree_prekeys.get(resort_key.as_bytes()) {
+            if let Ok(bundle) = sibna_core::handshake::PreKeyBundle::from_bytes(&resort_bytes) {
+                if bundle.validate().is_ok() {
+                    fetched_bundles_hex.push(hex::encode(&*resort_bytes));
+                    using_resort = true;
+                    info!("WARN: PreKey starvation for {} — using Last Resort Key!", &root_id[..16]);
+                    // CRITICAL: We DO NOT add it to keys_to_delete. It persists forever.
+                }
+            }
+        }
+    }
+
+    if fetched_bundles_hex.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Zero-Reuse: delete one-time keys after fetch
+    for key in keys_to_delete {
+        let _ = state.db.tree_prekeys.remove(key);
+    }
+    
+    if !using_resort {
+        info!("Fetched {} One-Time PreKey(s) and compacted for {}", fetched_bundles_hex.len(), &root_id[..16]);
+    }
+
+    (StatusCode::OK, Json(FetchPrekeyResponse {
+        bundles_hex: fetched_bundles_hex,
+    })).into_response()
+}
+
+async fn delete_prekey_handler(
+    Path(root_id): Path<String>,
+    AuthUser(claims): AuthUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // Verify the caller owns the identity key they are trying to delete.
+    if claims.sub != root_id {
+        return (StatusCode::FORBIDDEN, "Cannot delete another user's prekeys").into_response();
+    }
+
+    let prefix = format!("{}:", root_id);
+    let mut deleted = false;
+    for item in state.db.tree_prekeys.scan_prefix(prefix.as_bytes()) {
+        if let Ok((key, _)) = item {
+            if state.db.tree_prekeys.remove(key).unwrap_or_default().is_some() {
+                deleted = true;
+            }
+        }
+    }
+    if deleted {
+        StatusCode::OK.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+// Sealed Message REST Endpoint (HTTP fallback for IoT/no-WS)
+
+#[derive(Deserialize)]
+struct SendMessageRequest {
+    /// Recipient identity_key hex
+    recipient_id: String,
+    /// Encrypted payload (hex) — server cannot read
+    payload_hex: String,
+    /// LZ4 compressed?
+    compressed: Option<bool>,
+}
+
+async fn send_message_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    AuthUser(claims): AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<SendMessageRequest>,
+) -> impl IntoResponse {
+    // FIX: Use "message_send" rate limit, not "prekey_upload" (wrong operation key).
+    if let Err(r) = enforce_rate_limit(&state.rt.limiter, "message_send", &addr, &claims.sub) {
+        return r;
+    }
+
+    let envelope = ws::SealedEnvelope {
+        recipient_id: req.recipient_id.clone(),
+        payload_hex: req.payload_hex,
+        compressed: req.compressed.unwrap_or(false),
+        message_id: uuid::Uuid::new_v4().to_string(),
+        timestamp: chrono::Utc::now().timestamp(),
+        // HTTP REST fallback — no client-side signature required on this path.
+        // Only WS connections enforce Ed25519 message signing.
+        signature_hex: String::new(),
+    };
+
+    // Try to push to connected WebSocket client
+    if let Some(client_tx) = state.rt.clients.get(&req.recipient_id) {
+        if let Ok(data) = serde_json::to_vec(&envelope) {
+            if client_tx.send(data).is_ok() {
+                info!("Message delivered live to {}", &req.recipient_id[..16]);
+                return StatusCode::OK.into_response();
+            }
+        }
+    }
+
+    // Recipient offline — queue it
+    let db_key = format!("queue:{}:{}", envelope.recipient_id, envelope.message_id);
+    let ttl = chrono::Utc::now().timestamp() + 7 * 86400;
+    let value = serde_json::json!({ "envelope": envelope, "expires": ttl });
+    if let Ok(bytes) = serde_json::to_vec(&value) {
+        state.db.tree_queue.insert(db_key.as_bytes(), bytes).ok();
+        info!("Message queued for offline recipient {}", req.recipient_id.get(..16).unwrap_or(&req.recipient_id));
+    }
+
+    StatusCode::ACCEPTED.into_response()
+}
+
+// Inbox Fetch (for HTTP-only devices)
+
+#[derive(Deserialize)]
+struct InboxQuery {
+    identity_key_hex: String,
+}
+
+async fn inbox_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    AuthUser(claims): AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<InboxQuery>,
+) -> impl IntoResponse {
+    // Validate identity binding
+    if claims.sub != q.identity_key_hex {
+        return (StatusCode::UNAUTHORIZED, "Identity mismatch").into_response();
+    }
+
+    if let Err(r) = enforce_rate_limit(&state.rt.limiter, "inbox_fetch", &addr, &claims.sub) {
+        return r;
+    }
+
+    let prefix = format!("queue:{}:", claims.sub);
+    let now = chrono::Utc::now().timestamp();
+    let mut messages = Vec::new();
+    let mut to_delete = Vec::new();
+
+    for item in state.db.tree_queue.scan_prefix(prefix.as_bytes()) {
+        if let Ok((key, value)) = item {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&value) {
+                let expires = json["expires"].as_i64().unwrap_or(0);
+                if now > expires {
+                    to_delete.push(key);
+                    continue;
+                }
+                messages.push(json["envelope"].clone());
+                to_delete.push(key);
+            }
+        }
+    }
+
+    for key in to_delete {
+        state.db.tree_queue.remove(key).ok();
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "messages": messages, "count": messages.len() }))).into_response()
+}
