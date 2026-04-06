@@ -48,6 +48,8 @@ pub enum PaddingMode {
     Large,
     /// Pad to 16384-byte blocks. Maximum metadata protection.
     Maximum,
+    /// Fixed 64KB padding for all messages. Eliminates ALL message size signals for high-assurance.
+    Quantum,
     /// Custom block size (must be a power of 2, minimum 64 bytes).
     Custom(usize),
 }
@@ -61,6 +63,7 @@ impl PaddingMode {
             PaddingMode::Standard => 1024,
             PaddingMode::Large => 4096,
             PaddingMode::Maximum => 16384,
+            PaddingMode::Quantum => 65536,
             PaddingMode::Custom(n) => *n,
         }
     }

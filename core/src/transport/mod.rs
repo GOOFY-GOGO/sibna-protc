@@ -12,3 +12,26 @@ pub mod relay;
 
 #[cfg(feature = "p2p")]
 pub use relay::RelayClient;
+
+/// Unified trait for secure transport layers (TLS, Noise, SOCKS5).
+/// This ensures that Sibna can manage transport-level security directly.
+pub trait SecureTransport: Send + Sync {
+    /// Send an encrypted Sibna packet over the secure transport.
+    fn send_packet(&self, data: &[u8]) -> crate::error::ProtocolResult<()>;
+    /// Receive a packet from the transport.
+    fn recv_packet(&self) -> crate::error::ProtocolResult<Vec<u8>>;
+}
+
+/// SOCKS5 Transport handle for Tor/Anonymity integration.
+#[derive(Clone, Debug)]
+pub struct Socks5Config {
+    pub proxy_url: String,
+    pub target_addr: String,
+}
+
+/// TLS Transport handle for certificate-based security.
+#[derive(Clone, Debug)]
+pub struct TlsConfig {
+    pub server_name: String,
+    pub ca_cert: Option<Vec<u8>>,
+}

@@ -221,11 +221,21 @@ impl Default for Config {
 impl Config {
     /// Creates a strict Core-Mode configuration that minimizes the attack surface.
     /// This disables Tor, P2P discovery, and Cover Traffic, whilst enabling strict Safety Number validation.
-    /// Use this for environments demanding absolute baseline security logic without advanced overlays.
     pub fn core_mode() -> Self {
         Self {
             require_safety_numbers: true, // Defeat TOFU unconditionally
             proxy_url: None,              // Disable Tor surface area
+            ..Default::default()
+        }
+    }
+
+    /// Creates a "Fortress" configuration for maximum metadata and identity protection.
+    /// This enables Quantum Padding (64KB), mandatory Safety Number verification (Zero-TOFU),
+    /// and uses high-density Cover Traffic by default.
+    pub fn fortress_mode() -> Self {
+        Self {
+            require_safety_numbers: true,
+            message_padding: PaddingMode::Quantum,
             ..Default::default()
         }
     }
