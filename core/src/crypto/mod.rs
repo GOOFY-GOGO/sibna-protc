@@ -150,23 +150,24 @@ impl CryptoHandler {
             return Err(CryptoError::InvalidKeyLength);
         }
 
-        // Check for weak key (all zeros) in constant time
-        if key.ct_eq(&[0u8; KEY_LENGTH]).into() {
-            return Err(CryptoError::WeakKey);
-        }
-
-        // Check for weak key (all same byte) in constant time
+        // Aggregate bad flags in constant time to avoid timing oracles
+        let is_zero = key.ct_eq(&[0u8; KEY_LENGTH]);
+        
         let mut first_byte_all = [key[0]; KEY_LENGTH];
-        let is_all_same = key.ct_eq(&first_byte_all).into();
+        let is_all_same = key.ct_eq(&first_byte_all);
         first_byte_all.zeroize();
-        if is_all_same {
-            return Err(CryptoError::WeakKey);
-        }
-
+        
+        let is_weak = is_zero | is_all_same;
+        
         let mut key_array = [0u8; KEY_LENGTH];
         key_array.copy_from_slice(key);
 
+        // We initialize the cipher even for weak keys to maintain consistent timing
         let cipher = ChaCha20Poly1305::new(&key_array.into());
+
+        if is_weak.into() {
+            return Err(CryptoError::WeakKey);
+        }
 
         Ok(Self {
             cipher,
