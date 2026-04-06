@@ -23,6 +23,7 @@ The following table summarizes the proven and mitigated security invariants of t
 | **Memory Safety** | `Zeroize` + `kani` symbolic proofs | **Kani Proof** | ✅ Verified |
 | **Traffic Analysis** | Poisson Dummy Traffic & Padding| Padding Test | ✅ Mitigated |
 | **Identity Verification** | Safety Numbers (OOB) | QR Code Test | ✅ Enforced |
+| **DoS Protection** | CT-RateLimiter (Unified Path)| Timing Bench | ✅ Hardened |
 
 ---
 

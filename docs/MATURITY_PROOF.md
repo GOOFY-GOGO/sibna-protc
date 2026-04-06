@@ -20,6 +20,11 @@ We use the **Kani Rust Verifier** to prove the absence of common memory safety i
 - **Target**: `DoubleRatchet` message parser and X3DH handshake state machine.
 - **Result**: No crashes or hangs detected after intensive mutation-based stress.
 
+## 4. Operational Hardening (DoS Defense)
+- **Feature**: Constant-Time Rate Limiter.
+- **Implementation**: Unified `RateLimiter::check` path (Single-Pass Evaluation).
+- **Benefit**: Prevents attackers from using timing to probe the server's client-tracking state or rate-limiting thresholds.
+
 ## 4. Final Security Verdict
 
 | Status | Definition |

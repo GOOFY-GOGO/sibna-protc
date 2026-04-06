@@ -39,6 +39,7 @@ The security of Sibna $S$ relies on the following cryptographic assumptions:
 | **Memory Security** | `Zeroize` crate on `drop()` | **BEST-EFFORT** (No formal proof against LLVM optimization leaks) |
 | **Traffic Analysis** | Random Padding & Poisson Dummy Traffic | **EMPIRICAL** (Heuristic noise, not absolute statistical zero) |
 | **Handshake State** | Double Ratchet Finite State Machine | **MODELED** (Signal Protocol logic, not formally verified via TLA+ in this impl) |
+| **DoS Limiting** | CT-RateLimiter (Unified Path) | **MITIGATED** (Timing oracle removed by eliminating early-returns) |
 
 ## 4. Verdict Realignment
 

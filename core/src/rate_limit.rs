@@ -256,89 +256,86 @@ impl RateLimiter {
     /// # Returns
     /// `Ok(())` if allowed, `Err(RateLimitError)` if rate limited
     pub fn check(&self, operation: &str, client_id: &str) -> Result<(), RateLimitError> {
-        // Check global rate limit first
+        let now = Instant::now();
+        let mut error = None;
+
+        // 1. Check global rate limit (Internal path to avoid early return)
         if self.global_enabled {
-            self.check_global()?;
+            let mut global = self.global_counter.write();
+            if now.duration_since(global.last_reset) >= Duration::from_secs(1) {
+                global.count = 0;
+                global.last_reset = now;
+            }
+            if global.count >= self.global_rps {
+                error = Some(RateLimitError::GlobalRateExceeded);
+            } else {
+                global.count += 1;
+            }
         }
 
+        // 2. Lookup operation limit
         let limits = self.limits.read();
-        let limit = limits.get(operation)
-            .ok_or_else(|| RateLimitError::UnknownOperation(operation.to_string()))?;
+        let limit = match limits.get(operation) {
+            Some(l) => l,
+            None => return Err(RateLimitError::UnknownOperation(operation.to_string())),
+        };
 
+        // 3. Client state lookup & update
         let mut counters = self.counters.write();
-
-        // FIX N-02 (partial): Use a read-check before the write-lock path to
-        // reduce the timing signal that reveals whether a client_id exists.
-        // A full constant-time fix would require a purpose-built data structure;
-        // this closes the most obvious gap without restructuring the type.
-        //
-        // Existing cap defence: reject new clients when the map is full to
-        // prevent unbounded memory growth from client-ID rotation attacks.
-        if !counters.contains_key(client_id) && counters.len() >= Self::MAX_TRACKED_CLIENTS {
-            return Err(RateLimitError::GlobalRateExceeded);
+        
+        // Hide whether the client was already known or if we reached capacity
+        let is_known = counters.contains_key(client_id);
+        if !is_known && counters.len() >= Self::MAX_TRACKED_CLIENTS {
+            if error.is_none() {
+                error = Some(RateLimitError::GlobalRateExceeded);
+            }
         }
 
         let counter = counters.entry(client_id.to_string()).or_default();
-        let now = Instant::now();
         
-        // Check cooldown
+        // Check cooldown status
         if let Some(cooldown_end) = counter.cooldown_until {
             if now < cooldown_end {
-                let remaining = cooldown_end.duration_since(now);
-                return Err(RateLimitError::CooldownActive(remaining));
+                if error.is_none() {
+                    error = Some(RateLimitError::CooldownActive(cooldown_end.duration_since(now)));
+                }
+            } else {
+                counter.cooldown_until = None;
             }
-            counter.cooldown_until = None;
         }
         
-        // Update counters
+        // Update buckets (Always do this to maintain consistent timing)
         self.update_counters(counter, limit, now);
-        
-        // Refill burst tokens
         self.refill_burst_tokens(counter, limit, now);
         
-        // Check burst limit
-        if counter.burst_tokens == 0 {
-            counter.cooldown_until = Some(now + limit.cooldown);
-            return Err(RateLimitError::BurstExceeded);
+        // 4. Evaluate individual limits
+        if counter.burst_tokens == 0 && error.is_none() {
+            error = Some(RateLimitError::BurstExceeded);
         }
         
-        // Check rate limits
-        if counter.second_count >= limit.max_per_second {
-            counter.cooldown_until = Some(now + limit.cooldown);
-            return Err(RateLimitError::RateExceeded {
-                operation: operation.to_string(),
-                limit_type: "per_second".to_string(),
-                retry_after: limit.cooldown,
-            });
+        let mut limit_hit = None;
+        if counter.second_count >= limit.max_per_second { limit_hit = Some("per_second"); }
+        else if counter.minute_count >= limit.max_per_minute { limit_hit = Some("per_minute"); }
+        else if counter.hour_count >= limit.max_per_hour { limit_hit = Some("per_hour"); }
+        else if counter.day_count >= limit.max_per_day { limit_hit = Some("per_day"); }
+
+        if let Some(lt) = limit_hit {
+            if error.is_none() {
+                error = Some(RateLimitError::RateExceeded {
+                    operation: operation.to_string(),
+                    limit_type: lt.to_string(),
+                    retry_after: limit.cooldown,
+                });
+            }
         }
-        
-        if counter.minute_count >= limit.max_per_minute {
+
+        // 5. Final decision & state transition
+        if let Some(err) = error {
+            // Apply cooldown on failure to penalize aggressive probing
             counter.cooldown_until = Some(now + limit.cooldown);
-            return Err(RateLimitError::RateExceeded {
-                operation: operation.to_string(),
-                limit_type: "per_minute".to_string(),
-                retry_after: limit.cooldown,
-            });
+            return Err(err);
         }
-        
-        if counter.hour_count >= limit.max_per_hour {
-            counter.cooldown_until = Some(now + limit.cooldown);
-            return Err(RateLimitError::RateExceeded {
-                operation: operation.to_string(),
-                limit_type: "per_hour".to_string(),
-                retry_after: limit.cooldown,
-            });
-        }
-        
-        if counter.day_count >= limit.max_per_day {
-            counter.cooldown_until = Some(now + limit.cooldown);
-            return Err(RateLimitError::RateExceeded {
-                operation: operation.to_string(),
-                limit_type: "per_day".to_string(),
-                retry_after: limit.cooldown,
-            });
-        }
-        
+
         // Increment counters and consume burst token
         counter.second_count += 1;
         counter.minute_count += 1;
@@ -349,12 +346,11 @@ impl RateLimiter {
         Ok(())
     }
 
-    /// Check global rate limit
-    fn check_global(&self) -> Result<(), RateLimitError> {
+    /// Check global rate limit (Legacy method maintained for compatibility but check() uses internal logic)
+    pub fn check_global(&self) -> Result<(), RateLimitError> {
         let mut counter = self.global_counter.write();
         let now = Instant::now();
 
-        // Reset if second has passed
         if now.duration_since(counter.last_reset) >= Duration::from_secs(1) {
             counter.count = 0;
             counter.last_reset = now;
