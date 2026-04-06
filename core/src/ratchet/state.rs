@@ -6,7 +6,7 @@
 use super::ChainKey;
 use x25519_dalek::{PublicKey, StaticSecret};
 use serde::{Serialize, Deserialize};
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 use std::collections::HashMap;
 
 /// Double Ratchet State
@@ -62,6 +62,12 @@ pub struct DoubleRatchetState {
     /// Last activity timestamp
     pub last_activity: u64,
 
+    /// Messages sent counter (v3.0.0)
+    pub messages_sent: u64,
+
+    /// Messages received counter (v3.0.0)
+    pub messages_received: u64,
+
     /// State version for migrations
     pub version: u32,
 }
@@ -87,6 +93,8 @@ impl DoubleRatchetState {
             previous_counter: 0,
             created_at: now,
             last_activity: now,
+            messages_sent: 0,
+            messages_received: 0,
             version: Self::CURRENT_VERSION,
         }
     }
@@ -220,14 +228,13 @@ impl DoubleRatchetState {
 impl Clone for DoubleRatchetState {
     fn clone(&self) -> Self {
         // Manual clone because StaticSecret doesn't derive Clone.
-        // Use Zeroizing to ensure the temporary byte vector is securely zeroed.
+        // Use Zeroizing array to ensure the temporary secret scalar is securely zeroed.
         let dh_local_clone = self.dh_local.as_ref().map(|dh| {
-            let zeroizing_bytes = Zeroizing::new(dh.to_bytes().to_vec());
-            // Zeroizing derefs to [u8], and StaticSecret::from consumes the array.
-            // We need to pass a 32-byte array. Since zeroizing_bytes is a Vec, we copy into an array.
             let mut arr = [0u8; 32];
-            arr.copy_from_slice(&zeroizing_bytes[..32]);
-            StaticSecret::from(arr)
+            arr.copy_from_slice(&dh.to_bytes());
+            let secret = StaticSecret::from(arr);
+            arr.zeroize();
+            secret
         });
 
         let dh_remote_clone = self.dh_remote;
@@ -245,6 +252,8 @@ impl Clone for DoubleRatchetState {
             previous_counter: self.previous_counter,
             created_at: self.created_at,
             last_activity: self.last_activity,
+            messages_sent: self.messages_sent,
+            messages_received: self.messages_received,
             version: self.version,
         }
     }
@@ -266,6 +275,8 @@ impl Zeroize for DoubleRatchetState {
         }
         self.skipped_message_keys.clear();
         self.previous_counter = 0;
+        self.messages_sent = 0;
+        self.messages_received = 0;
     }
 }
 

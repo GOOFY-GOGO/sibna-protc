@@ -291,6 +291,11 @@ impl X3dhHandshake {
         let peer_spk = self.peer_signed_prekey.ok_or(ProtocolError::InvalidState)?;
         let peer_opk = self.peer_onetime_prekey;
 
+        #[cfg(feature = "pqc")]
+        if self._config.require_safety_numbers && self.peer_pq_pk.is_none() {
+            return Err(ProtocolError::HandshakeFailed);
+        }
+
         // Convert byte keys to PublicKey
         let peer_ik_pub = PublicKey::from(peer_ik);
         let peer_spk_pub = PublicKey::from(peer_spk);
@@ -342,6 +347,11 @@ impl X3dhHandshake {
         // Get peer public keys
         let peer_ik = self.peer_identity_key.ok_or(ProtocolError::InvalidState)?;
         let peer_ek = self.peer_ephemeral_key.ok_or(ProtocolError::InvalidState)?;
+
+        #[cfg(feature = "pqc")]
+        if self._config.require_safety_numbers && self.our_pq_sk.is_none() {
+            return Err(ProtocolError::HandshakeFailed);
+        }
 
         // Convert byte keys to PublicKey
         let peer_ik_pub = PublicKey::from(peer_ik);

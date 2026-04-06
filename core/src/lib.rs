@@ -189,6 +189,8 @@ pub struct Config {
     pub relay_url: String,
     /// SOCKS5 proxy for anonymity (e.g. "socks5://127.0.0.1:9050" for Tor)
     pub proxy_url: Option<String>,
+    /// Require out-of-band Safety Number verification before messaging (Defeats TOFU)
+    pub require_safety_numbers: bool,
 }
 
 impl Default for Config {
@@ -211,6 +213,20 @@ impl Default for Config {
             message_padding: PaddingMode::Standard,
             relay_url: String::from("https://relay.sibna.dev"),
             proxy_url: None,
+            require_safety_numbers: false,
+        }
+    }
+}
+
+impl Config {
+    /// Creates a strict Core-Mode configuration that minimizes the attack surface.
+    /// This disables Tor, P2P discovery, and Cover Traffic, whilst enabling strict Safety Number validation.
+    /// Use this for environments demanding absolute baseline security logic without advanced overlays.
+    pub fn core_mode() -> Self {
+        Self {
+            require_safety_numbers: true, // Defeat TOFU unconditionally
+            proxy_url: None,              // Disable Tor surface area
+            ..Default::default()
         }
     }
 }
@@ -383,6 +399,13 @@ impl SecureContext {
                 .map_err(|_| ProtocolError::RateLimitExceeded)?;
         }
 
+        // Strict mode verification (Identity TOFU Mitigations)
+        if self.config.require_safety_numbers {
+            if !self.keystore.read().is_peer_verified(peer_id) {
+                return Err(ProtocolError::VerificationRequired);
+            }
+        }
+
         let sessions = self.sessions.read();
         sessions.create_session(peer_id, self.config.clone())
     }
@@ -416,6 +439,16 @@ impl SecureContext {
         self.keystore.read().get_identity_keypair()
     }
 
+    /// Get our Ed25519 identity public key
+    pub fn get_identity_public(&self) -> ProtocolResult<[u8; 32]> {
+        Ok(self.get_identity()?.ed25519_public)
+    }
+
+    /// Generate a new signed prekey
+    pub fn generate_signed_prekey(&self) -> ProtocolResult<()> {
+        self.keystore.write().generate_signed_prekey()
+    }
+
     /// Perform X3DH handshake with a peer
     #[allow(clippy::too_many_arguments)]
     pub fn perform_handshake(
@@ -432,6 +465,14 @@ impl SecureContext {
             let limiter = self.rate_limiter.write();
             limiter.check("handshake", &hex::encode(peer_id))
                 .map_err(|_| ProtocolError::RateLimitExceeded)?;
+        }
+
+        // Under require_safety_numbers, handshakes can only be verified manually.
+        // If they are not verified, we panic out of the handshake BEFORE sharing keys.
+        if self.config.require_safety_numbers {
+            if !self.keystore.read().is_peer_verified(peer_id) {
+                return Err(ProtocolError::VerificationRequired);
+            }
         }
 
         let keystore = self.keystore.read();
@@ -554,6 +595,13 @@ impl SecureContext {
             return Err(ProtocolError::InvalidArgument);
         }
 
+        // Strict mode transmission enforcement
+        if self.config.require_safety_numbers {
+            if !self.keystore.read().is_peer_verified(session_id) {
+                return Err(ProtocolError::VerificationRequired);
+            }
+        }
+
         // Apply padding to hide message size from network observers
         let padded = pad_message(plaintext, self.config.message_padding)?;
 
@@ -599,6 +647,35 @@ impl SecureContext {
 
         // Strip padding to recover the original message
         unpad_message(&padded_plaintext)
+    }
+
+    /// Get the Safety Number for a peer (Fingerprint for out-of-band verification).
+    ///
+    /// Safety Numbers are calculated from both parties' long-term identity keys.
+    /// They allow users to verify that no Man-In-The-Middle (MITM) is present.
+    pub fn get_safety_number(&self, peer_id: &[u8]) -> ProtocolResult<SafetyNumber> {
+        let keystore = self.keystore.read();
+        let our_id = keystore.get_identity_keypair()?.ed25519_public;
+        
+        let pin = keystore.get_peer_pin(peer_id)
+            .ok_or(ProtocolError::KeyNotFound)?;
+            
+        Ok(SafetyNumber::calculate(&our_id, &pin.identity_key))
+    }
+
+    /// Get the raw 32-byte fingerprint for a peer.
+    pub fn get_fingerprint(&self, peer_id: &[u8]) -> ProtocolResult<[u8; 32]> {
+        self.get_safety_number(peer_id).map(|sn| *sn.fingerprint())
+    }
+
+    /// Mark a peer as verified (Defeats TOFU warning and enables messaging in strict mode).
+    pub fn verify_peer(&self, peer_id: &[u8]) -> ProtocolResult<()> {
+        let mut keystore = self.keystore.write();
+        if keystore.get_peer_pin(peer_id).is_none() {
+            return Err(ProtocolError::KeyNotFound);
+        }
+        keystore.mark_peer_verified(peer_id);
+        Ok(())
     }
 
     /// Create a new group
@@ -811,8 +888,8 @@ pub struct ContextStats {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SessionManager {
     #[serde(with = "sessions_map_serde")]
-    sessions: dashmap::DashMap<Vec<u8>, Arc<RwLock<DoubleRatchetSession>>>,
-    _config: Config,
+    pub(crate) sessions: dashmap::DashMap<Vec<u8>, Arc<RwLock<DoubleRatchetSession>>>,
+    pub(crate) _config: Config,
 }
 
 impl SessionManager {

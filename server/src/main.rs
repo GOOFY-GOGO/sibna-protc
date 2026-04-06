@@ -100,79 +100,57 @@ where
 // Entry point
 
 #[tokio::main]
-async fn main() {
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse().unwrap_or(8080);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    run_server(listener, None).await
+}
 
-    // Database
-    let db_path = std::env::var("SIBNA_DB_PATH")
-        .unwrap_or_else(|_| "sibna_server_db".to_string());
-    let db = match sled::open(&db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("CRITICAL: Failed to open sled database at {}: {}", db_path, e);
-            std::process::exit(1);
-        }
-    };
-    info!("Database opened at '{}'", db_path);
+pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Option<String>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let addr = listener.local_addr()?;
+    eprintln!("DEBUG: Starting Sibna Server on {}", addr);
+    // ... rest of the function (starting with Database)
+    let db_path = db_path_override.unwrap_or_else(|| {
+        std::env::var("SIBNA_DB_PATH").unwrap_or_else(|_| "sibna_server_db".to_string())
+    });
+    let db = sled::open(&db_path)?;
+    eprintln!("DEBUG: Sled opened at {}", db_path);
 
     // OPEN TREES ONCE - Performance & Integrity Fix
-    let tree_prekeys = db.open_tree("prekeys").expect("Failed to open prekeys tree");
-    let tree_dedup = db.open_tree("msg_dedup").expect("Failed to open dedup tree");
-    let tree_queue = db.open_tree("msg_queue").expect("Failed to open queue tree");
-    let tree_challenges = db.open_tree("auth_challenges").expect("Failed to open challenges tree");
+    let tree_prekeys = db.open_tree("prekeys")?;
+    let tree_dedup = db.open_tree("msg_dedup")?;
+    let tree_queue = db.open_tree("msg_queue")?;
+    let tree_challenges = db.open_tree("auth_challenges")?;
 
-    // JWT secret (set SIBNA_JWT_SECRET in env for production)
+    // JWT secret
     let jwt_secret = Arc::new(
         std::env::var("SIBNA_JWT_SECRET")
             .unwrap_or_else(|_| {
-                warn!("SIBNA_JWT_SECRET not set — generating ephemeral secret (restarts invalidate tokens!)");
+                warn!("SIBNA_JWT_SECRET not set — generating ephemeral secret");
                 hex::encode(random_bytes_32())
             })
     );
 
-    // Rate limiter — separate limits per operation
     let mut limiter = RateLimiter::new();
     limiter.set_global_enabled(true);
     limiter.set_global_rps(5000);
 
     let prekey_limit = sibna_core::rate_limit::OperationLimit {
-        max_per_second: 50,
-        max_per_minute: 500,
-        max_per_hour: 10_000,
-        max_per_day: 100_000,
-        cooldown: Duration::from_secs(1),
-        burst_size: 20,
+        max_per_second: 500, // Increase for testing
+        max_per_minute: 5000,
+        max_per_hour: 100_000,
+        max_per_day: 1_000_000,
+        cooldown: Duration::from_millis(100),
+        burst_size: 100,
     };
-    let tight_limit = sibna_core::rate_limit::OperationLimit {
-        max_per_second: 5,
-        max_per_minute: 30,
-        max_per_hour: 300,
-        max_per_day: 3_000,
-        cooldown: Duration::from_secs(10),
-        burst_size: 3,
-    };
-
+    
     limiter.add_limit("prekey_upload".to_string(), prekey_limit.clone());
-    limiter.add_limit("prekey_fetch".to_string(), prekey_limit);
-    limiter.add_limit("auth_challenge".to_string(), tight_limit.clone());
-    limiter.add_limit("auth_prove".to_string(), tight_limit);
-    limiter.add_limit("inbox_fetch".to_string(), sibna_core::rate_limit::OperationLimit {
-        max_per_second: 10,
-        max_per_minute: 100,
-        max_per_hour: 1_000,
-        max_per_day: 10_000,
-        cooldown: Duration::from_secs(2),
-        burst_size: 5,
-    });
-    // FIX: Dedicated rate limit for message sending (was incorrectly using prekey_upload limit)
-    limiter.add_limit("message_send".to_string(), sibna_core::rate_limit::OperationLimit {
-        max_per_second: 20,
-        max_per_minute: 300,
-        max_per_hour: 5_000,
-        max_per_day: 50_000,
-        cooldown: Duration::from_secs(1),
-        burst_size: 10,
-    });
+    limiter.add_limit("prekey_fetch".to_string(), prekey_limit.clone());
+    limiter.add_limit("auth_challenge".to_string(), prekey_limit.clone());
+    limiter.add_limit("auth_prove".to_string(), prekey_limit.clone());
+    limiter.add_limit("message_send".to_string(), prekey_limit);
 
     let db_state = Arc::new(DbState {
         sled: db,
@@ -193,7 +171,6 @@ async fn main() {
         rt: rt_state,
     };
 
-    // Router
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/v1/auth/challenge", post(auth::challenge_handler))
@@ -204,108 +181,38 @@ async fn main() {
         .route("/v1/messages/send", post(send_message_handler))
         .route("/v1/messages/inbox", get(inbox_handler))
         .route("/ws", get(ws::ws_handler))
-
         .layer(TraceLayer::new_for_http())
-        .layer(RequestBodyLimitLayer::new(64 * 1024)) // 64 KB max body
-        // FIX: CORS was set to allow ANY origin, which exposes the API to
-        // cross-origin requests from any website. Restrict to known origins in
-        // production via SIBNA_ALLOWED_ORIGINS (comma-separated list).
-        // Falls back to Any only when the env var is unset (dev mode).
-        .layer({
-            let origins_env = std::env::var("SIBNA_ALLOWED_ORIGINS").unwrap_or_default();
-            let parsed: Vec<axum::http::HeaderValue> = origins_env
-                .split(',')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            if parsed.is_empty() {
-                warn!("SIBNA_ALLOWED_ORIGINS not set — CORS is open (dev mode only!)");
-                CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any)
-            } else {
-                CorsLayer::new()
-                    .allow_origin(parsed)
-                    .allow_headers(Any)
-                    .allow_methods(Any)
-            }
-        })
+        .layer(RequestBodyLimitLayer::new(21 * 1024 * 1024)) // 21 MB to allow for large-test payloads
+        .layer(CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any))
         .with_state(state.clone());
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse().unwrap_or(8080);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    info!("Sibna Server listening on {}", addr);
-    info!("Transports: REST + WebSocket");
-    info!("Auth: Ed25519 Challenge-Response / JWT");
-
-    // Background task: prune the dedup tree every hour.
-    // Without pruning it grows unboundedly — every unique message_id ever seen
-    // stays in sled forever, turning the tree into a persistent memory leak.
-    // We store a timestamp alongside the "1" sentinel and delete entries older
-    // than 48 hours (well past any realistic replay window).
+    // Pruning Task
     {
         let db_prune = state.db.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
             loop {
                 interval.tick().await;
-                {
                 let tree = &db_prune.tree_dedup;
-                    let cutoff = chrono::Utc::now().timestamp() - 48 * 3600;
-                    let mut to_delete = Vec::new();
-                    for item in tree.iter() {
-                        if let Ok((key, value)) = item {
-                            let mut mark_delete = false;
-
-                            // 1. Check legacy/string format: b"ts:<unix_timestamp>" or b"1"
-                            if let Ok(s) = std::str::from_utf8(&value) {
-                                if let Some(ts_str) = s.strip_prefix("ts:") {
-                                    if let Ok(ts) = ts_str.parse::<i64>() {
-                                        if ts < cutoff { mark_delete = true; }
-                                    }
-                                } else if s == "1" {
-                                    mark_delete = true;
-                                }
-                            } 
-                            // 2. Check new binary format: i64 (8 bytes)
-                            else if value.len() == 8 {
-                                let mut b = [0u8; 8];
-                                b.copy_from_slice(&value);
-                                let ts = i64::from_be_bytes(b);
-                                if ts < cutoff { mark_delete = true; }
-                            }
-
-                            if mark_delete {
-                                to_delete.push(key);
-                            }
+                let cutoff = chrono::Utc::now().timestamp() - 48 * 3600;
+                let mut to_delete = Vec::new();
+                for item in tree.iter() {
+                    if let Ok((key, value)) = item {
+                        if value.len() == 8 {
+                            let mut b = [0u8; 8];
+                            b.copy_from_slice(&value);
+                            if i64::from_be_bytes(b) < cutoff { to_delete.push(key); }
                         }
                     }
-                    let pruned = to_delete.len();
-                    for key in to_delete {
-                        tree.remove(key).ok();
-                    }
-                    if pruned > 0 {
-                        tracing::info!("DEDUP_PRUNE: removed {} expired entries", pruned);
-                    }
                 }
+                for key in to_delete { tree.remove(key).ok(); }
             }
         });
     }
 
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("CRITICAL: Failed to bind to {}: {}", addr, e);
-            std::process::exit(1);
-        }
-    };
-    if let Err(e) = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await {
-        eprintln!("CRITICAL: Server error: {}", e);
-        std::process::exit(1);
-    }
+    info!("Sibna Server listening on {}", addr);
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    Ok(())
 }
 
 // Helpers

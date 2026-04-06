@@ -279,6 +279,10 @@ pub enum ProtocolError {
     #[error("Peer identity key changed — possible man-in-the-middle attack")]
     KeyMismatch,
 
+    /// Identity verification required via Safety Numbers
+    #[error("Identity verification via out-of-band Safety Numbers is required")]
+    VerificationRequired,
+
     /// Nonce reservation required for safety
     #[error("Nonce reservation pool exhausted - persistent update required")]
     NonceReservationRequired,

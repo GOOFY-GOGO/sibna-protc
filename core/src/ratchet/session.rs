@@ -28,10 +28,6 @@ pub struct DoubleRatchetSession {
     _ratchet_config: RatchetConfig,
     session_id: String,
     peer_id: Option<String>,
-    #[serde(with = "atomic_u64_serde")]
-    messages_sent: std::sync::atomic::AtomicU64,
-    #[serde(with = "atomic_u64_serde")]
-    messages_received: std::sync::atomic::AtomicU64,
     /// Unix timestamp when session was created
     created_at_ts: u64,
 }
@@ -64,6 +60,8 @@ impl DoubleRatchetSession {
             created_at: now,
             last_activity: now,
             version: DoubleRatchetState::CURRENT_VERSION,
+            messages_sent: 0,
+            messages_received: 0,
         };
 
         let session_id = Self::generate_session_id()?;
@@ -73,8 +71,7 @@ impl DoubleRatchetSession {
             _ratchet_config: RatchetConfig::default(),
             session_id,
             peer_id: None,
-            messages_sent: std::sync::atomic::AtomicU64::new(0),
-            messages_received: std::sync::atomic::AtomicU64::new(0),
+
             created_at_ts: now,
         })
     }
@@ -131,6 +128,8 @@ impl DoubleRatchetSession {
             created_at: now,
             last_activity: now,
             version: DoubleRatchetState::CURRENT_VERSION,
+            messages_sent: 0,
+            messages_received: 0,
         };
 
         let session_id = Self::generate_session_id()?;
@@ -140,8 +139,7 @@ impl DoubleRatchetSession {
             _ratchet_config: RatchetConfig::default(),
             session_id,
             peer_id: None,
-            messages_sent: std::sync::atomic::AtomicU64::new(0),
-            messages_received: std::sync::atomic::AtomicU64::new(0),
+
             created_at_ts: now,
         })
     }
@@ -202,7 +200,7 @@ impl DoubleRatchetSession {
         let message = RatchetMessage { header, ciphertext };
 
         state.touch();
-        self.messages_sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        state.messages_sent += 1;
 
         Ok(message.to_bytes())
     }
@@ -270,7 +268,7 @@ impl DoubleRatchetSession {
         };
 
         if result.is_ok() {
-            self.messages_received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            state.messages_received += 1;
         }
 
         result
@@ -383,10 +381,8 @@ impl DoubleRatchetSession {
     pub fn set_peer_id(&mut self, peer_id: String) { self.peer_id = Some(peer_id); }
     pub fn peer_id(&self) -> Option<&str> { self.peer_id.as_deref() }
     pub fn message_stats(&self) -> (u64, u64) {
-        (
-            self.messages_sent.load(std::sync::atomic::Ordering::Relaxed),
-            self.messages_received.load(std::sync::atomic::Ordering::Relaxed),
-        )
+        let state = self.state.read();
+        (state.messages_sent, state.messages_received)
     }
     pub fn age(&self) -> std::time::Duration { 
         let now = std::time::SystemTime::now()
@@ -460,25 +456,6 @@ impl Zeroize for DoubleRatchetSession {
     }
 }
 
-mod atomic_u64_serde {
-    use serde::{Serializer, Deserializer, Deserialize};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    pub fn serialize<S>(val: &AtomicU64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_u64(val.load(Ordering::SeqCst))
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<AtomicU64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let val = u64::deserialize(deserializer)?;
-        Ok(AtomicU64::new(val))
-    }
-}
 
 impl Drop for DoubleRatchetSession {
     fn drop(&mut self) {}

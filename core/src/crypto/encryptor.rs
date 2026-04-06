@@ -143,7 +143,7 @@ impl Encryptor {
         let timestamp = u64::from_le_bytes(
             ciphertext[8..16].try_into().map_err(|_| CryptoError::InvalidCiphertext)?
         );
-        let _padding = u64::from_le_bytes(
+        let padding = u64::from_le_bytes(
             ciphertext[16..24].try_into().map_err(|_| CryptoError::InvalidCiphertext)?
         );
 
@@ -174,8 +174,8 @@ impl Encryptor {
         let nonce = &ciphertext[MESSAGE_HEADER_SIZE..MESSAGE_HEADER_SIZE + NONCE_LENGTH];
         let encrypted = &ciphertext[MESSAGE_HEADER_SIZE + NONCE_LENGTH..];
 
-        // Build header for verification
-        let header = self.build_header(message_number, timestamp);
+        // Build header for verification (using wire padding to ensure AD match)
+        let header = self.build_header_with_padding(message_number, timestamp, padding);
 
         // Build associated data
         let mut full_ad = Vec::with_capacity(associated_data.len() + header.len());
@@ -198,11 +198,15 @@ impl Encryptor {
 
     /// Build message header
     fn build_header(&self, message_number: u64, timestamp: u64) -> Vec<u8> {
+        self.build_header_with_padding(message_number, timestamp, 0)
+    }
+
+    /// Build message header with specific padding
+    fn build_header_with_padding(&self, message_number: u64, timestamp: u64, padding: u64) -> Vec<u8> {
         let mut header = Vec::with_capacity(MESSAGE_HEADER_SIZE);
         header.extend_from_slice(&message_number.to_le_bytes());
         header.extend_from_slice(&timestamp.to_le_bytes());
-        // Add padding for future use
-        header.extend_from_slice(&[0u8; 8]);
+        header.extend_from_slice(&padding.to_le_bytes());
         header
     }
 

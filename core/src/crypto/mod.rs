@@ -150,13 +150,16 @@ impl CryptoHandler {
             return Err(CryptoError::InvalidKeyLength);
         }
 
-        // Check for weak key (all zeros)
-        if key.iter().all(|&b| b == 0) {
+        // Check for weak key (all zeros) in constant time
+        if key.ct_eq(&[0u8; KEY_LENGTH]).into() {
             return Err(CryptoError::WeakKey);
         }
 
-        // Check for weak key (all same byte)
-        if key.iter().all(|&b| b == key[0]) {
+        // Check for weak key (all same byte) in constant time
+        let mut first_byte_all = [key[0]; KEY_LENGTH];
+        let is_all_same = key.ct_eq(&first_byte_all).into();
+        first_byte_all.zeroize();
+        if is_all_same {
             return Err(CryptoError::WeakKey);
         }
 
@@ -388,12 +391,15 @@ pub fn validate_key_security(key: &[u8]) -> CryptoResult<()> {
     }
 
     // Check for all zeros
-    if key.iter().all(|&b| b == 0) {
+    if key.ct_eq(&[0u8; KEY_LENGTH]).into() {
         return Err(CryptoError::WeakKey);
     }
 
     // Check for all same byte
-    if key.iter().all(|&b| b == key[0]) {
+    let mut first_byte_all = [key[0]; KEY_LENGTH];
+    let is_all_same = key.ct_eq(&first_byte_all).into();
+    first_byte_all.zeroize();
+    if is_all_same {
         return Err(CryptoError::WeakKey);
     }
 

@@ -1,84 +1,85 @@
-# نموذج الأمان — Sibna Protocol v3.0.0
+# Security Model & Threat Architecture — Sibna Protocol v3.0.0
 
 ---
 
-## نضج المشروع
+## Project Maturity
 
 > [!WARNING]
-> Sibna v3.0.0 تطبيق تشفير مستقل يستخدم primitives مُدقَّقة من RustCrypto. **لم تُجرَ مراجعة أمنية خارجية مستقلة** على التنسيق البروتوكولي. يُنصح بمراجعة مستقلة قبل التكامل في بيئات حرجة.
+> Sibna v3.0.0 is an independent cryptographic implementation leveraging audited primitives from RustCrypto. **No independent external security audit has been performed** on the protocol orchestration or state machines. We strongly advise commissioning an independent cryptographic audit before integrating this codebase into mission-critical environments.
 
 ---
 
-## الحمايات المُطبَّقة
+## Implemented Protections
 
-| الميزة | الآلية | الحالة |
+| Feature | Mechanism | Status |
 |--------|--------|--------|
-| **سرية البيانات** | ChaCha20-Poly1305 (256-bit) AEAD | ✅ |
-| **مقاومة الكم** | هجين ML-KEM-768 + X25519 | ✅ افتراضي |
-| **Key-Substitution / UKS** | BLAKE3 Transcript Binding في X3DH v10 | ✅ |
-| **إخفاء هوية P2P** | Stealth Handshake — `StealthBundle` مُشفَّر | ✅ |
-| **Forward Secrecy** | HMAC-SHA256 chain ratchet لكل رسالة | ✅ |
-| **Post-Compromise Security** | DH ratchet بعد كل جولة | ✅ |
-| **حماية كلمة المرور** | Argon2id (memory-hard) عند `feature = "argon2"` | ✅ |
-| **حماية الذاكرة من Swap** | `mlock` (Unix) / `VirtualLock` (Windows) | ✅ |
-| **تثبيت مفاتيح الأجهزة** | `device_id [u8;16]` في KDF — سلاسل ratchet مستقلة | ✅ |
-| **Sealed Sender** | الخادم لا يرى هوية المُرسِل | ✅ |
-| **نزاهة المغلَّف** | Ed25519 + SHA-512 على جميع الحقول بما فيها `is_dummy` | ✅ |
-| **إخفاء حجم الرسالة** | كتل ثابتة 256B / 1KB / 4KB / 16KB | ✅ |
-| **Cover Traffic** | توزيع أسي (Poisson) — متوسط 5 ثوانٍ | ✅ |
-| **حد الـ Peers** | MAX_ACTIVE_PEERS = 500 في HybridRouter | ✅ |
-| **حد حجم الرسالة** | 64 MiB قبل أي تخصيص ذاكرة | ✅ |
-| **تحقق عناوين P2P** | رفض loopback / multicast / unspecified / port 0 | ✅ |
-| **Graceful Shutdown** | `stop_discovery()` + `tokio::select!` | ✅ |
-| **نزاهة Challenges** | HMAC-SHA256(challenge, jwt_secret) في sled | ✅ |
-| **مقارنة HMAC ثابتة الزمن** | `subtle::ConstantTimeEq` في `prove_handler` | ✅ |
-| **Rate Limiting متعدد الطبقات** | IP + Identity، حد عالمي + per-client | ✅ |
+| **Data Confidentiality** | ChaCha20-Poly1305 (256-bit) AEAD | ✅ |
+| **Quantum Resistance** | ML-KEM-768 + X25519 Hybrid | ✅ Default |
+| **Key-Substitution / UKS** | BLAKE3 Transcript Binding in X3DH v10 | ✅ |
+| **P2P Anonymity** | Stealth Handshake — `StealthBundle` encrypted | ✅ |
+| **Forward Secrecy** | HMAC-SHA256 chain ratchet per message | ✅ |
+| **Post-Compromise Security** | DH ratchet after every full round-trip | ✅ |
+| **Storage Protection** | Argon2id (memory-hard) when `feature="argon2"` | ✅ |
+| **Swap Memory Protection**| `mlock` (Unix) / `VirtualLock` (Windows) | ✅ |
+| **Device Key Pinning** | `device_id [u8;16]` mixed into KDF | ✅ |
+| **Sealed Sender** | Server cannot read sender identity | ✅ |
+| **Envelope Integrity** | Ed25519 + SHA-512 (includes `is_dummy`) | ✅ |
+| **Message Padding** | Fixed block padding (256B/1KB/4KB/16KB) | ✅ |
+| **Cover Traffic** | Exponential Distribution (Poisson) — ~5s mean | ✅ |
+| **P2P Peer Limits** | `MAX_ACTIVE_PEERS = 500` memory boundary | ✅ |
+| **Strict Verification** | `Config::core_mode()` Enforces Safety Numbers | ✅ |
 
 ---
 
-## القيود الحرجة
+## Threat Model (Attacker Capabilities)
 
-### 1. المراقب العالمي السلبي (GPA)
+Sibna is designed around a strict Threat Model. It is critical to understand what adversaries can and cannot do.
 
-Sibna لا يوفر حماية كاملة من خصم يرى الشبكة الكاملة. Cover traffic وpadding يُصعِّبان التحليل لكن لا يمنعانه.
+### 1. Global Passive Adversary (GPA)
+**Definition:** An entity (e.g., an ISP or state actor) capable of monitoring, recording, and analyzing all packets flowing across the entire internet.
+- **What they CAN do:** Analyze traffic frequencies. They can see when connections are made, IP addresses, and encrypted packet sizes.
+- **What we mitigate:** `Cover Traffic` and `Message Padding` drastically increase the noise-to-signal ratio, rendering frequency analysis mathematically challenging.
+- **What we CANNOT prevent:** Without `proxy_url` (Tor/SOCKS5), the GPA ultimately knows that Node A is communicating with Node B. Absolute anonymity requires routing the protocol via Tor.
 
-**التخفيف:** Tor عبر `P2pConfig { proxy: Some("socks5://127.0.0.1:9050"), .. }`.
+### 2. Active Network Attacker (Man-In-The-Middle)
+**Definition:** An entity capable of intercepting, modifying, dropping, or injecting packets between peers or between a peer and the central relay server.
+- **What they CAN do:** Attempt to block messages or serve forged Public Keys to Alice masquerading as Bob.
+- **What we mitigate:** The protocol inherently rejects unsigned/tampered packets via AEAD. To defeat Key-Injection, `Config::require_safety_numbers = true` forcefully mandates out-of-band verification via QR codes, physically neutralizing the MITM topology.
+- **What we CANNOT prevent:** If a developer ignores Safety Numbers and relies exclusively on Trust-On-First-Use (TOFU), the very first communication channel is susceptible to MITM interception.
 
-### 2. TOFU
-
-التبادل الأول عرضة لـ MITM. Stealth Handshake يُخفي هويتك من المراقب السلبي لكن لا يُثبت صحة هوية الطرف الآخر. **يجب التحقق من Safety Numbers خارج النطاق.**
-
-### 3. إخفاء الهوية
-
-ليس ميزة مدمجة. IP مرئي للخادم بشكل افتراضي. إخفاء الهوية فقط عبر Tor أو SOCKS5 صراحةً.
-
-### 4. Timing Oracle في Rate Limiter (جزئي)
-
-`RateLimiter::check()` يستخدم `RwLock` عالمي — فرق زمن صغير قابل للقياس يكشف وجود client_id. الإصلاح الكامل يتطلب إعادة هيكلة النوع بـ `DashMap` + `subtle::ConstantTimeEq` — مؤجل لـ v2.1.0.
-
-### 5. قنوات الجانب (Side Channels)
-
-`subtle` يحمي من timing attacks في الكود. لا ضمان ضد Spectre / Meltdown أو مسابر الأجهزة.
+### 3. Local Hardware Attacker
+**Definition:** An entity with physical or remote access to the device executing the protocol.
+- **What they CAN do:** Attempt to extract forensic key material from RAM or disk.
+- **What we mitigate:** Secrets are encrypted on disk via Argon2id (defeating weak passwords). Live RAM is pinned (`mlock`) to prevent paging to swap files, and keys are zeroized instantly upon drop (`Zeroize` crate).
+- **What we CANNOT prevent:** A rooted device (e.g. executing kernel-level malware like Pegasus) can hook directly into memory before zeroization or extract the raw inputs. Sibna provides no guarantees against a compromised host OS.
 
 ---
 
-## المواصفات التشفيرية
+## Known Restraints
 
-| المعامل | الخوارزمية |
+- **Anonymity:** Not a built-in feature. IPs are visible to the server natively. True anonymity requires configuring proxy routing manually within `P2pConfig`.
+- **Timing Oracle (Rate Limiter):** A minor, measurable sub-millisecond discrepancy exists in `RateLimiter::check()` due to global `RwLock` structures. Highly sophisticated local observers might deduce client_id presences. Fix deferred.
+- **Side Channels:** `subtle` protects against timing attacks exclusively inside the codebase logic. Hardware side-channels (Spectre/Meltdown) are outside this protocol's threat remediation scope.
+
+---
+
+## Cryptographic Parameters
+
+| Parameter | Algorithm |
 |---------|-----------|
-| KEM (كمي) | ML-KEM-768 (FIPS 203) — Category 3 |
-| DH (كلاسيكي) | X25519 — ~128-bit |
+| KEM (Quantum) | ML-KEM-768 (FIPS 203) — Category 3 |
+| DH (Classical) | X25519 — ~128-bit equivalent |
 | AEAD | ChaCha20-Poly1305 — 256-bit |
 | KDF | HKDF-SHA256 |
 | Transcript Hash | BLAKE3 |
-| التوقيع | Ed25519 |
-| كلمة المرور | Argon2id |
+| Signature | Ed25519 |
+| Password KDF | Argon2id |
 | HMAC (Challenges) | HMAC-SHA256 |
-| مقارنة ثابتة الزمن | `subtle` crate |
+| Constant Time | `subtle` crate |
 
 ---
 
-## الإبلاغ عن الثغرات
+## Vulnerability Reporting
 
-**لا تفتح issues عامة.**  
-📧 `security@sibna.dev`
+**DO NOT open public issues for security vulnerabilities.**  
+📧 Contact: `security@sibna.dev`

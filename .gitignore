@@ -1,6 +1,6 @@
 # Rust
-/target
-/Cargo.lock
+**/target
+**/Cargo.lock
 **/*.rs.bk
 
 # IDEs
@@ -11,7 +11,7 @@
 *.log
 test_run*
 errors_v*
-tests/test_db_*
+**/test_db_*
 
 # JS libraries
 node_modules/
@@ -29,4 +29,4 @@ _agent/
 brain/
 
 # Server Database
-sibna_server_db/
+**/sibna_server_db/

@@ -8,6 +8,14 @@ authors.workspace = true
 description = "Sibna Protocol Server"
 repository.workspace = true
 
+[lib]
+name = "sibna_server"
+path = "src/main.rs"
+
+[[bin]]
+name = "sibna-server"
+path = "src/main.rs"
+
 [dependencies]
 sibna-core = { path = "../core", features = ["std", "pqc"] }
 tokio = { version = "1.37", features = ["full"] }
@@ -33,3 +41,12 @@ rand = { workspace = true }
 lz4_flex = "0.11"
 ed25519-dalek = { workspace = true }
 subtle = { workspace = true }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+tokio-tungstenite = "0.24"
+jsonwebtoken = "9.3"
+uuid = { version = "1.8", features = ["v4"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = "0.3"

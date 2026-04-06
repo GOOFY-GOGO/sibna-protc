@@ -883,6 +883,15 @@ impl KeyStore {
         self.peer_pins.get(peer_id)
     }
 
+    /// Check if a peer has been verified by the user out-of-band via Safety Number
+    pub fn is_peer_verified(&self, peer_id: &[u8]) -> bool {
+        if let Some(pin) = self.peer_pins.get(peer_id) {
+            pin.verified
+        } else {
+            false
+        }
+    }
+
     /// Mark a peer's pinned key as verified after Safety Number comparison.
     pub fn mark_peer_verified(&mut self, peer_id: &[u8]) {
         if let Some(pin) = self.peer_pins.get_mut(peer_id) {
