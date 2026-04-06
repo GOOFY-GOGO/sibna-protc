@@ -464,7 +464,7 @@ impl SecureContext {
     pub fn perform_handshake(
         &self,
         peer_id: &[u8],
-        initiator: bool,
+        role: HandshakeRole,
         peer_identity_key: Option<&[u8]>,
         peer_signed_prekey: Option<&[u8]>,
         peer_onetime_prekey: Option<&[u8]>,
@@ -492,7 +492,7 @@ impl SecureContext {
             .with_config(self.config.clone())
             .with_keystore(&*keystore)
             .with_random(&*random)
-            .with_initiator(initiator);
+            .with_role(role);
 
         if let Some(pk) = peer_identity_key {
             builder = builder.with_peer_identity_key(pk)?;
@@ -542,7 +542,7 @@ impl SecureContext {
         // NOTE: The API parameter `peer_onetime_prekey` is reused here to transport
         // the initiator's ephemeral public key to the responder path. Callers MUST
         // pass the initiator's ephemeral public key (not their OPK) when initiator=false.
-        let (remote_dh, local_dh) = if initiator {
+        let (remote_dh, local_dh) = if role.is_initiator() {
             // Initiator seeds the ratchet with peer's SPK as first remote DH key.
             let spk = peer_signed_prekey.ok_or(ProtocolError::InvalidState)?;
             let remote_dh = PublicKey::from(
@@ -565,7 +565,7 @@ impl SecureContext {
             local_dh,
             remote_dh,
             self.config.clone(),
-            initiator,
+            role,
         )?;
 
         let session_arc = Arc::new(RwLock::new(session));

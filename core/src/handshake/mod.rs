@@ -12,6 +12,7 @@ pub use x3dh::*;
 use crate::error::{ProtocolResult, ProtocolError};
 use crate::crypto::constant_time_eq;
 use x25519_dalek::{StaticSecret, PublicKey};
+use serde::{Serialize, Deserialize};
 
 /// Size of ML-KEM-768 (Kyber) public key
 pub const PQ_PUBLIC_KEY_SIZE: usize = 1184;
@@ -144,12 +145,30 @@ impl std::fmt::Debug for HandshakeOutput {
 }
 
 /// Handshake role (initiator or responder)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HandshakeRole {
     /// Initiator of the handshake
     Initiator,
     /// Responder to the handshake
     Responder,
+}
+
+impl HandshakeRole {
+    /// Deterministically determine the handshake role based on lexicographical 
+    /// comparison of two public keys. This ensures that in simultaneous P2P connections,
+    /// both peers agree on their respective roles.
+    pub fn determine(our_pk: &[u8; 32], peer_pk: &[u8; 32]) -> Self {
+        if our_pk < peer_pk {
+            Self::Initiator
+        } else {
+            Self::Responder
+        }
+    }
+
+    /// Returns true if this role is the initiator.
+    pub fn is_initiator(&self) -> bool {
+        matches!(self, Self::Initiator)
+    }
 }
 
 /// Handshake state

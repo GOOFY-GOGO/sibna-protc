@@ -28,7 +28,7 @@ use x25519_dalek::{StaticSecret, PublicKey};
 use zeroize::Zeroize;
 
 use crate::{
-    handshake::PreKeyBundle,
+    handshake::{PreKeyBundle, HandshakeRole},
     keystore::IdentityKeyPair,
     ratchet::DoubleRatchetSession,
     Config,
@@ -277,12 +277,16 @@ pub async fn initiator_handshake(
         // Build Double Ratchet session
         let remote_dh = PublicKey::from(bundle.signed_prekey);
         let mut shared_secret = x3dh_result.shared_secret;
+        
+        // V3.1.0: Deterministic role check to prevent confusion
+        let role = HandshakeRole::Initiator; 
+
         let session = DoubleRatchetSession::from_shared_secret(
             &shared_secret,
             x3dh_ephemeral,
             remote_dh,
             protocol_config,
-            true,
+            role,
         ).map_err(|e| P2pError::Crypto(format!("ratchet init: {:?}", e)))?;
 
         shared_secret.zeroize();
@@ -419,12 +423,15 @@ pub async fn responder_handshake(
 
         // Build Double Ratchet session
         let mut shared_secret = x3dh_result.shared_secret;
+        
+        let role = HandshakeRole::Responder;
+
         let session = DoubleRatchetSession::from_shared_secret(
             &shared_secret,
             spk_secret,
             initiator_eph_pub,
             protocol_config,
-            false,
+            role,
         ).map_err(|e| P2pError::Crypto(format!("ratchet init: {:?}", e)))?;
 
         shared_secret.zeroize();

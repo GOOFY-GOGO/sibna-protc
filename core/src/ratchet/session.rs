@@ -10,6 +10,7 @@ use super::{ChainKey, DoubleRatchetState, RatchetHeader, RatchetMessage, Ratchet
 use super::super::crypto::{Encryptor, SecureRandom, RatchetKdf};
 use super::super::error::{ProtocolError, ProtocolResult};
 use super::super::validation::{validate_message, validate_associated_data};
+use super::super::handshake::HandshakeRole;
 use crate::Config;
 use x25519_dalek::{StaticSecret, PublicKey};
 use hkdf::Hkdf;
@@ -84,7 +85,7 @@ impl DoubleRatchetSession {
         local_dh: StaticSecret,
         remote_dh: PublicKey,
         config: Config,
-        initiator: bool,
+        role: HandshakeRole,
     ) -> ProtocolResult<Self> {
         if shared_secret.iter().all(|&b| b == 0) {
             return Err(ProtocolError::InvalidArgument);
@@ -102,7 +103,7 @@ impl DoubleRatchetSession {
         chain_key.copy_from_slice(&okm[32..]);
         okm.zeroize();
 
-        let (sending_chain, receiving_chain) = if initiator {
+        let (sending_chain, receiving_chain) = if role.is_initiator() {
             (Some(ChainKey::new(chain_key)), None)
         } else {
             (None, Some(ChainKey::new(chain_key)))
@@ -478,7 +479,7 @@ mod tests {
         let shared_secret = [0x42u8; 32];
         let local_dh = StaticSecret::random_from_rng(&mut rand_core::OsRng);
         let remote_dh = PublicKey::from(&StaticSecret::random_from_rng(&mut rand_core::OsRng));
-        assert!(DoubleRatchetSession::from_shared_secret(&shared_secret, local_dh, remote_dh, config, true).is_ok());
+        assert!(DoubleRatchetSession::from_shared_secret(&shared_secret, local_dh, remote_dh, config, HandshakeRole::Initiator).is_ok());
     }
 
     #[test]
@@ -490,8 +491,8 @@ mod tests {
         let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
         let pk2 = PublicKey::from(&sk2);
 
-        let s1 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk1, pk2, config.clone(), true).unwrap();
-        let s2 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk2, pk1, config, false).unwrap();
+        let s1 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk1, pk2, config.clone(), HandshakeRole::Initiator).unwrap();
+        let s2 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk2, pk1, config, HandshakeRole::Responder).unwrap();
 
         let plaintext = b"Hello Production!";
         let ad = b"aad";
@@ -508,8 +509,8 @@ mod tests {
         let pk1 = PublicKey::from(&sk1);
         let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
         let pk2 = PublicKey::from(&sk2);
-        let s1 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk1, pk2, config.clone(), true).unwrap();
-        let s2 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk2, pk1, config, false).unwrap();
+        let s1 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk1, pk2, config.clone(), HandshakeRole::Initiator).unwrap();
+        let s2 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk2, pk1, config, HandshakeRole::Responder).unwrap();
         let ct = s1.encrypt(b"test", b"ad").unwrap();
         let _ = s2.decrypt(&ct, b"ad").unwrap();
         assert!(s2.decrypt(&ct, b"ad").is_err());

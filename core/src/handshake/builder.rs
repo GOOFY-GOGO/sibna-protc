@@ -96,15 +96,6 @@ impl HandshakeBuilder {
         self
     }
 
-    /// Set as initiator
-    pub fn with_initiator(mut self, initiator: bool) -> Self {
-        self.role = Some(if initiator {
-            HandshakeRole::Initiator
-        } else {
-            HandshakeRole::Responder
-        });
-        self
-    }
 
     /// Set peer identity key
     pub fn with_peer_identity_key(mut self, key: &[u8]) -> ProtocolResult<Self> {
@@ -468,7 +459,7 @@ mod tests {
     #[test]
     fn test_builder_with_initiator() {
         let builder = HandshakeBuilder::new()
-            .with_initiator(true);
+            .with_role(HandshakeRole::Initiator);
         
         assert_eq!(builder.role, Some(HandshakeRole::Initiator));
     }

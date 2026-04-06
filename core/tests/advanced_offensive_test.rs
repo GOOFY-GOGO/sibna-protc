@@ -6,7 +6,7 @@
 //! 3. Network Traffic Analysis (Payload padding)
 //! 4. MITM Protection (Identity Pinning)
 
-use sibna_core::{SecureContext, Config, SafetyNumber};
+use sibna_core::{SecureContext, Config, SafetyNumber, HandshakeRole};
 use sibna_core::crypto::{CryptoHandler, CryptoError};
 
 #[test]
@@ -43,7 +43,7 @@ fn test_identity_pinning_and_mitm_rejection() {
     
     // 1. First contact: Alice presents her identity key. Protocol: TOFU.
     let alice_key_1 = [0xAAu8; 32];
-    let _ = ctx.perform_handshake(peer_id, true, Some(&alice_key_1), None, None, None); 
+    let _ = ctx.perform_handshake(peer_id, HandshakeRole::Initiator, Some(&alice_key_1), None, None, None); 
     
     // Fix: Bind the Arc to avoid "temporary value dropped while borrowed"
     let keystore_arc = ctx.keystore();

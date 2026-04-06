@@ -1,4 +1,4 @@
-use sibna_core::{Config, SecureContext, ProtocolError};
+use sibna_core::{Config, SecureContext, ProtocolError, HandshakeRole};
 use x25519_dalek::{StaticSecret, PublicKey};
 
 /// Initialize a strict context bypassing Tor/P2P overlays
@@ -48,11 +48,11 @@ async fn test_offensive_replay_attack_mitigation() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice_session = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let bob_session = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config, false,
+        &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
     ).unwrap();
 
     let plaintext = b"SECRET_STRIKE";
@@ -81,7 +81,7 @@ async fn test_offensive_forged_envelope_rejection() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice_session = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let plaintext = b"HONEST_MESSAGE";
@@ -95,7 +95,7 @@ async fn test_offensive_forged_envelope_rejection() {
     }
 
     let bob_session = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config, false,
+        &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
     ).unwrap();
 
     let forgery_result = bob_session.decrypt(&ciphertext, b"");
@@ -118,11 +118,11 @@ async fn test_offensive_session_desync_handling() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator
     ).unwrap();
 
     let bob = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config.clone(), false
+        &shared_secret, bob_secret, alice_pub, config.clone(), HandshakeRole::Responder
     ).unwrap();
 
     let mut messages = Vec::new();
@@ -179,7 +179,7 @@ async fn test_offensive_state_persistence_integrity() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator
     ).unwrap();
 
     let _ = alice.encrypt(b"PERSIST_TEST_1", b"").unwrap();
@@ -194,7 +194,7 @@ async fn test_offensive_state_persistence_integrity() {
     let ciphertext2 = alice_restored.encrypt(b"PERSIST_TEST_2", b"").unwrap();
     
     let bob = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config.clone(), false
+        &shared_secret, bob_secret, alice_pub, config.clone(), HandshakeRole::Responder
     ).unwrap();
     
     let dec2 = bob.decrypt(&ciphertext2, b"").unwrap();
@@ -222,7 +222,7 @@ async fn test_offensive_pq_downgrade_prevention() {
     // ATTACK: Eve strips the PQ components from the handshake.
     let result = alice.perform_handshake(
         b"bob",
-        true,
+        HandshakeRole::Initiator,
         Some(&bob_id),
         Some(&bob_bundle),
         None, 
@@ -253,12 +253,12 @@ async fn test_concurrent_replay_race_condition() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let bob = Arc::new(tokio::sync::RwLock::new(
         sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-            &shared_secret, bob_secret, alice_pub, config, false,
+            &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
         ).unwrap()
     ));
 
@@ -309,11 +309,11 @@ async fn test_resource_exhaustion_skipped_keys_bomb() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let bob = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config, false,
+        &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
     ).unwrap();
 
     // ATTACK: Alice sends message #100, skipping 99 messages.
@@ -344,11 +344,11 @@ async fn test_fuzz_active_tampering_resilience() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let bob = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config, false,
+        &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
     ).unwrap();
 
     let mut rng = rand::thread_rng();
@@ -384,11 +384,11 @@ async fn test_high_latency_extreme_reordering() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let bob = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config, false,
+        &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
     ).unwrap();
 
     let mut messages = Vec::new();
@@ -417,11 +417,11 @@ async fn test_offensive_timestamp_time_travel() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let bob = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config, false,
+        &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
     ).unwrap();
 
     // ATTACK: Eve modifies the timestamp to 10 years in the future (bypass expiry logic)
@@ -448,11 +448,11 @@ async fn test_offensive_header_dh_corruption() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let bob = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config, false,
+        &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
     ).unwrap();
 
     let mut ct = alice.encrypt(b"DH_TAMPER", b"").unwrap();
@@ -477,11 +477,11 @@ async fn test_offensive_chain_inflation_dos() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let bob = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config, false,
+        &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
     ).unwrap();
 
     let payload = b"STEP";
@@ -515,11 +515,11 @@ async fn test_offensive_large_payload_stress() {
     let bob_pub = PublicKey::from(&bob_secret);
 
     let alice = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, alice_secret, bob_pub, config.clone(), true,
+        &shared_secret, alice_secret, bob_pub, config.clone(), HandshakeRole::Initiator,
     ).unwrap();
 
     let bob = sibna_core::ratchet::DoubleRatchetSession::from_shared_secret(
-        &shared_secret, bob_secret, alice_pub, config, false,
+        &shared_secret, bob_secret, alice_pub, config, HandshakeRole::Responder,
     ).unwrap();
 
     let large_data = vec![0xEEu8; 1024 * 1024];

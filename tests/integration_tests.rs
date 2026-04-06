@@ -75,10 +75,10 @@ fn test_double_ratchet_basic_encrypt_decrypt() {
     let pk_bob   = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), true
+        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
     ).unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, false
+        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
     ).unwrap();
 
     let plaintext = b"Hello Bob, this is Alice.";
@@ -101,10 +101,10 @@ fn test_double_ratchet_multiple_messages() {
     let pk_bob   = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), true
+        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
     ).unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, false
+        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
     ).unwrap();
 
     for i in 0..50u32 {
@@ -126,10 +126,10 @@ fn test_double_ratchet_replay_rejected() {
     let pk_bob   = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), true
+        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
     ).unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, false
+        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
     ).unwrap();
 
     let ct = alice.encrypt(b"test replay", b"aad").unwrap();
@@ -151,10 +151,10 @@ fn test_double_ratchet_wrong_ad_rejected() {
     let pk_bob   = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), true
+        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
     ).unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, false
+        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
     ).unwrap();
 
     let ct = alice.encrypt(b"secret", b"correct-aad").unwrap();
@@ -173,10 +173,10 @@ fn test_double_ratchet_tampered_ciphertext_rejected() {
     let pk_bob   = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), true
+        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
     ).unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, false
+        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
     ).unwrap();
 
     let mut ct = alice.encrypt(b"tamper me", b"aad").unwrap();
