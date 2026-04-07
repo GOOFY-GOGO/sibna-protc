@@ -57,11 +57,11 @@ router.send_message(&recipient_id, b"Hello").await?;
 
 | Property | Safeguard | Implementation Status |
 |----------|-----------|--------|
-| **Identity (MITM)** | `Config::fortress_mode()` enforces Safety Number verification. | ✅ Policy Enforced |
-| **Traffic Analysis** | **Fixed-size padding** (up to 64KB) + Poisson Cover Traffic. | ✅ Logic Implemented |
-| **Anonymity** | Native SOCKS5/Tor transport support integrated. | ✅ Logic Integrated |
-| **Side Channels** | Statistically stable timing profile under controlled benchmarks. | ✅ Evaluated |
-| **Rate Limiting** | Constant-time authentication path implementation. | ✅ Designed for Resistance |
+| **Identity (MITM)** | `Config::fortress_mode()` enforces Safety Number verification. | Policy Enforced |
+| **Traffic Analysis** | **Fixed-size padding** (up to 64KB) + Poisson Cover Traffic. | Logic Implemented |
+| **Anonymity** | Native SOCKS5/Tor transport support integrated. | Logic Integrated |
+| **Side Channels** | No statistically significant timing difference under bench tests. | Under Evaluation |
+| **Rate Limiting** | Constant-time authentication path implementation. | Logic Implemented |
 
 ## Documentation
 

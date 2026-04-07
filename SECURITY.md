@@ -14,15 +14,26 @@
 
 | Feature | Engineering Mechanism | Evaluation Evidence | Security Status |
 |--------|--------|--------|-----------------|
-| **Data Confidentiality** | ChaCha20-Poly1305 (256-bit) AEAD | Functional Tests | ✅ Mitigated |
-| **Quantum Resistance** | ML-KEM-768 + X25519 Hybrid | Handshake Logic | ✅ Designed for Resilience |
-| **Handshake Safety** | Lexicographical Role Resolution | Determinism Tests | ✅ System Evaluated |
-| **Forward Secrecy** | HMAC-SHA256 ratchet chains | Ratchet Tests | ✅ Mitigated |
-| **Side-Channel Defense** | `subtle` Constant-Time primitives | **Statistical Bench** | ✅ Evaluation Ongoing |
-| **Memory Safety** | `Zeroize` on drop / memory pinning | Manual Code Review | ✅ Logic Implemented |
-| **Traffic Analysis** | Noise-prefix padding (up to 64KB) | Padding Tests | ✅ Designed for Resistance |
-| **Identity Anchoring** | Cryptographic TOFU Pinning | MITM Rejection | ✅ Policy Enforced |
-| **DoS Protection** | Integrated rate-limiting paths | Benchmark Tests | ✅ Designed for Resistance |
+| **Data Confidentiality** | ChaCha20-Poly1305 (256-bit) AEAD | Functional Tests | Logic Implemented |
+| **Quantum Resistance** | ML-KEM-768 + X25519 Hybrid | Handshake Logic | Under Evaluation |
+| **Handshake Safety** | Lexicographical Role Resolution | Determinism Tests | Logic Implemented |
+| **Forward Secrecy** | HMAC-SHA256 ratchet chains | Ratchet Tests | Logic Implemented |
+| **Side-Channel Defense** | `subtle` Constant-Time primitives | Statistical Bench | Internal Evaluation Ongoing |
+| **Memory Safety** | `Zeroize` on drop / memory pinning | Manual Code Review | Logic Implemented |
+| **Traffic Analysis** | Noise-prefix padding (up to 64KB) | Padding Tests | Logic Implemented |
+| **Identity Anchoring** | Cryptographic TOFU Pinning | MITM Rejection | Policy Enforced |
+| **DoS Protection** | Integrated rate-limiting paths | Benchmark Tests | Logic Implemented |
+
+---
+
+## Non-Guarantees & Known Limitations
+
+Sibna Protocol v3.0.0 is built on best-effort security engineering, but it does **not** provide guarantees against the following:
+
+1.  **Hardware-Level Side Channels**: Resistance is implemented at the software layer. Differential Power Analysis (DPA) or EM side-channels on physical hardware are not mitigated.
+2.  **Shared Cloud Environments**: In virtualized or multi-tenant cloud environments (e.g., AWS/GCP), micro-architectural attacks (Spectre/Meltdown style) may still pose a risk to constant-time execution.
+3.  **Untrusted OS/Root**: If the underlying Operating System is compromised, the protocol's memory pinning and secure storage can be bypassed by an attacker with root/kernel access.
+4.  **Future Quantum Algorithms**: While ML-KEM-768 provides currently accepted post-quantum resistance, it is not a guarantee against future theoretical advancements in quantum cryptanalysis.
 
 ---
 
