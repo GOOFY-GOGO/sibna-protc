@@ -1,54 +1,56 @@
-# المساهمة في Sibna Protocol
+# Contributing to Sibna Protocol
 
-## الأمان أولاً
+## Security First
 
-هذه مكتبة تشفير. كل مساهمة يجب أن تتبع هذه القواعد.
+Sibna is a high-assurance cryptographic library. All contributions must adhere to these strict security invariants.
 
-### القواعد الحرجة
+### Critical Rules
 
-- **لا `.unwrap()` أو `.expect()` في كود الإنتاج** — استخدم `?` أو معالجة صريحة
-- **لا تبعيات جديدة بدون مراجعة** — شغّل `cargo audit` قبل الإضافة
-- **لا primitives تشفير مخصصة** — استخدم فقط crates مُدقَّقة من RustCrypto
-- **كل Public API يجب توثيقه** — ملاحظات أمنية مطلوبة للدوال التشفيرية
-- **جميع الاختبارات يجب أن تنجح** بما فيها `cargo clippy -- -D warnings`
+- **No `.unwrap()` or `.expect()` in Production Code** — Use `?` operator or explicit matching for error handling.
+- **No New Dependencies** — Any addition must be vetted. Run `cargo audit` before suggesting a new crate.
+- **No Custom Cryptographic Primitives** — Use only audited crates from the `RustCrypto` collective.
+- **Public API Documentation** — Every public function and struct must have a docstring including security considerations.
+- **Zero-Warning Implementation** — All tests, `clippy`, and `rustfmt` must pass before submission.
 
-### قواعد معالجة الأخطاء
+### Error Handling Guidelines
 
-**`InternalErrorDetailed`** مسموح به للتسجيل الداخلي فقط — لا يُرجَع للمستدعي الخارجي:
+**`InternalErrorDetailed`** is for internal logging only. Never return raw internal error details to an external caller:
 
 ```rust
-// ✅ صحيح
+// ✅ CORRECT: Log details internally, return generic error externally
 .map_err(|e| {
-    warn!("OPERATION_FAILED: {:?}", e);   // تفاصيل في السجل الداخلي
-    debug!("Details: {}", e);
-    ProtocolError::InternalError          // عام للمستدعي
+    warn!("OPERATION_FAILED: {:?}", e); // Detail in logs
+    ProtocolError::InternalError        // Generic for caller
 })?;
 
-// ❌ خطأ — يُسرِّب تفاصيل داخلية
+// ❌ INCORRECT: Leaks internal implementation details
 .map_err(|e| ProtocolError::InternalErrorDetailed { details: e.to_string() })?;
 ```
 
-**المقارنات الأمنية** يجب أن تكون constant-time:
+### Side-Channel Resistance
+
+All security-sensitive comparisons MUST be constant-time to prevent timing oracles:
 
 ```rust
-// ✅ صحيح — ثابت الزمن
+// ✅ CORRECT: Constant-time comparison using `subtle`
 use subtle::ConstantTimeEq;
 if computed_mac.ct_eq(&stored_mac[..]).unwrap_u8() == 0 { ... }
 
-// ❌ خطأ — timing oracle
+// ❌ INCORRECT: Standard comparison is a timing oracle
 if computed_mac_hex != stored_mac_hex { ... }
 ```
 
-### إرسال التغييرات
+### Submission Process
 
-1. Fork وأنشئ feature branch
-2. `cargo test --all`
-3. `cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used`
-4. `cargo fmt --all`
-5. `cargo audit`
-6. Pull request مع وصف واضح
+1. Fork and create a feature branch.
+2. Run `cargo test --all` to verify logic.
+3. Run `cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used` for linting.
+4. Run `cargo fmt --all` for formatting.
+5. Run `cargo audit` to check for CVEs in dependencies.
+6. Submit a Pull Request with a clear description and justification for changes.
 
-### الإبلاغ عن الثغرات
+### Vulnerability Disclosure
 
-**لا تفتح issues عامة.**  
+**Do not open public issues for security vulnerabilities.**  
+Please report security concerns privately to:  
 📧 `security@sibna.dev`
