@@ -1,27 +1,28 @@
 # Security Policy — Sibna Protocol v3.0.0
 
+> [!CAUTION]
+> **Security Disclaimer**: Sibna is an experimental cryptographic implementation. It has not undergone formal 3rd-party review. Cryptographic software should not be deployed in critical production environments without independent validation.
+
 ---
 
-## Project Maturity: Hardened Security-Oriented Implementation (Pre-Audit)
+## Project Maturity: Security-Hardened Research Prototype (Pre-Audit)
 
 > [!IMPORTANT]
-> Sibna v3.0.0 is a security-hardened cryptographic suite. It has been engineered to mitigate timing side-channels and validated through statistical benchmarks and internal architectural review. While it awaits a formal 3rd-party independent audit (Roadmap: Q3 2026), it is built to high-assurance baseline requirements for sensitive deployments.
+> Sibna v3.0.0 is an architectural implementation designed with high-assurance security invariants. It has been engineered to mitigate common side-channel vulnerabilities and evaluated through internal statistical benchmarks. A formal independent audit is pending (Roadmap: Q3 2026).
 
 ---
 
-## Technical Mitigations & Security Evidence
-
-| Feature | Engineering Mechanism | Evidence | Security Status |
+| Feature | Engineering Mechanism | Evaluation Evidence | Security Status |
 |--------|--------|--------|-----------------|
 | **Data Confidentiality** | ChaCha20-Poly1305 (256-bit) AEAD | Functional Tests | ✅ Mitigated |
-| **Quantum Resistance** | ML-KEM-768 + X25519 Hybrid | Handshake Logic | ✅ Hardened |
-| **Handshake Safety** | Lexicographical Role Resolution | Determinism Tests | ✅ Verified |
+| **Quantum Resistance** | ML-KEM-768 + X25519 Hybrid | Handshake Logic | ✅ Designed for Resilience |
+| **Handshake Safety** | Lexicographical Role Resolution | Determinism Tests | ✅ System Evaluated |
 | **Forward Secrecy** | HMAC-SHA256 ratchet chains | Ratchet Tests | ✅ Mitigated |
-| **Side-Channel Defense** | `subtle` Constant-Time primitives | **Statistical Bench** | ✅ Hardened |
-| **Memory Safety** | `Zeroize` on drop / memory pinning | Manual Audit | ✅ Verified |
-| **Traffic Analysis** | Noise-prefix padding (up to 64KB) | Padding Tests | ✅ Hardened |
-| **Identity Anchoring** | Cryptographic TOFU Pinning | MITM Rejection | ✅ Enforced |
-| **DoS Protection** | Integrated rate-limiting paths | Benchmark Tests | ✅ Hardened |
+| **Side-Channel Defense** | `subtle` Constant-Time primitives | **Statistical Bench** | ✅ Evaluation Ongoing |
+| **Memory Safety** | `Zeroize` on drop / memory pinning | Manual Code Review | ✅ Logic Implemented |
+| **Traffic Analysis** | Noise-prefix padding (up to 64KB) | Padding Tests | ✅ Designed for Resistance |
+| **Identity Anchoring** | Cryptographic TOFU Pinning | MITM Rejection | ✅ Policy Enforced |
+| **DoS Protection** | Integrated rate-limiting paths | Benchmark Tests | ✅ Designed for Resistance |
 
 ---
 

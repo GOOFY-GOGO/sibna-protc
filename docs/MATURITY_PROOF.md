@@ -1,37 +1,35 @@
-# Sibna Protocol: Production-Ready Maturity Proof 💎
+# Sibna Protocol: Security Evaluation & Mitigation Report 🛡️
 
-This document provides technical evidence to support the transition of Sibna Protocol v3.0.0 from an experimental design to a Production-Ready high-assurance cryptographic suite.
+This document outlines the technical design decisions and internal evaluation metrics that support the security properties of Sibna Protocol v3.0.0.
 
-## 1. Statistical Timing Analysis (Empirical Proof)
-We verify the "Constant-Time" property not just by code audit, but by empirical measurement.
+## 1. Statistical Timing Analysis (Internal Evaluation)
+We evaluate the "Constant-Time" properties of our implementation through empirical measurement.
 - **Location**: `core/tests/statistical_timing_test.rs`
-- **Methodology**: 100,000 iterations comparing "Weak" (Zero) keys vs "Strong" keys.
-- **Result**: Difference in mean execution time < 10ns (within standard OS noise threshold).
-- **Conclusion**: The protocol logic does not leak key information through measurable timing oracles on the tested architecture.
+- **Evaluation**: 100,000 iterations comparing "Weak" (Zero) keys vs "Strong" (Random) keys.
+- **Result**: Difference in mean execution time < 10ns (statistically stable under tested OS conditions).
+- **Caveat**: Statistical benchmarking provides evidence of mitigation on specific hardware/OS combinations but is not a formal mathematical proof of constant-time behavior across all architectures.
 
 ## 2. Structural Security Engineering
-We rely on well-audited cryptographic primitives and patterns to ensure high assurance.
-- **Constant-Time Comparison**: All security-critical buffers (HMAC, Challenge, Padding) are compared via `subtle::ConstantTimeEq`. This eliminates the primary class of software-based timing vulnerabilities.
-- **KDF Hardening**: HKDF-SHA256 is used with transcript-bound salts (salt=T) to ensure domain separation and prevent pre-computation attacks.
-- **Memory Safety**: Memory is zeroized immediately upon drop (via `Zeroize`), and sensitive keys are pinned to non-swappable physical memory where possible.
+We utilize established cryptographic primitives and patterns to mitigate common vulnerability classes.
+- **Side-Channel Mitigation**: Security-critical comparisons (HMAC, Challenge, Padding) are implemented using `subtle::ConstantTimeEq`. This is designed to eliminate common software-based timing oracles.
+- **KDF Domain Separation**: HKDF-SHA256 uses transcript-bound salts to ensure strict separation between different cryptographic contexts.
+- **Memory Security**: Implementation includes explicit `Zeroize` on drop and memory-pinning (`mlock`) to limit the exposure of sensitive key material.
 
-## 3. Operational Hardening (DoS & Metadata Defense)
-- **Feature**: Unified Rate Limiter & Quantum Padding (64KB).
-- **Implementation**: Constant-time structural paths for authorization and fixed-size block padding in `crypto/padding.rs`.
-- **Benefit**: Eliminates message-size side-channels and DoS-probing oracles.
+## 3. Operational Defenses (DoS & Metadata)
+- **Hardened Padding**: Implementation is designed to mitgate message-size side-channels by utilizing fixed-size noise-prefixed blocks (up to 64KB).
+- **Baseline Rate Limiting**: Protocol includes internal paths for authorization-level rate limiting, designed with constant-time structural properties.
 
-## 4. Zero-TOFU Enforcement (Identity Proof)
+## 4. Identity Management (Role & TOFU)
 - **Location**: `core/src/lib.rs` (`Config::fortress_mode`)
-- **Mechanism**: Mandatory Safety Number verification before session establishment.
-- **Conclusion**: Sibna is immune to "First-Contact" impersonation attacks when high-assurance mode is enabled.
+- **Policy**: In its highest security configuration, Sibna enforces mandatory Safety Number verification to protect against impersonation.
 
-## 5. Final Security Verdict
+## 5. Summary of Evaluation Status
 
-| Status | Definition |
-|--------|------------|
-| **Production-Ready** | Hardened for critical systems and commercial deployment. |
-| **Audit Status** | Internal Technical & Statistical Validation Complete. |
-| **Risk Profile** | Mitigates software timing, traffic analysis, and TOFU-based MITM. |
+| Property | Status |
+|----------|--------|
+| **Release Grade** | Hardened Security-Oriented Research Prototype |
+| **Verification** | Internal Technical & Statistical Evaluation Complete |
+| **Audit Status** | **Pending Formal Third-Party Cryptographic Review** |
 
-> [!IMPORTANT]
-> The Sibna Protocol v3.0.0 addresses the critical side-channel gaps identified in previous audits and now meets the baseline requirements for a production-grade secure messaging system.
+> [!CAUTION]
+> **Important Note**: Sibna v3.0.0 is designed with a high-security architecture, but it remains a research-grade implementation. Users are advised that no cryptographic system is truly "proven" until it has undergone rigorous, independent, and peer-reviewed formal audits.

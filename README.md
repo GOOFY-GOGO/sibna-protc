@@ -1,14 +1,15 @@
-# Sibna Protocol v3.0.0 
+# Sibna Protocol v3.0.0 "Fortress"
 
 A high-security Rust implementation of the X3DH and Double Ratchet protocol — E2EE dual-licensed under Apache 2.0 / MIT.
 
-> This is an independent project. It is not affiliated with the Signal Technology Foundation and does not use their code.
+> [!CAUTION]
+> **Security Disclaimer**: This protocol is currently an experimental research prototype and has not yet undergone formal third-party cryptographic review or independent security audit. It should be used for research and evaluation purposes only.
 
 ---
 
 > [!IMPORTANT]
-> **Status: Hardened Security-Oriented Implementation (Pre-Audit)**.
-> Sibna v3.0.0 is a security-hardened cryptographic suite validated via statistical timing analysis and internal architectural audit. While it awaits a formal 3rd-party independent audit (Roadmap: Q3 2026), it is designed to meet high-assurance requirements for sensitive deployments.
+> **Status: Security-Hardened Research Prototype (Pre-Audit)**.
+> Sibna v3.0.0 is an architectural implementation designed for high-assurance metadata resistance. It has been evaluated against timing side-channels via internal statistical benchmarking. A formal 3rd-party independent audit is targeted for Q3 2026.
 
 ---
 
@@ -54,15 +55,13 @@ router.send_message(&recipient_id, b"Hello").await?;
 
 ---
 
-## Security Invariants
-
-| Property | Safeguard | Status |
+| Property | Safeguard | Implementation Status |
 |----------|-----------|--------|
-| **Identity (MITM)** | `Config::fortress_mode()` enforces Safety Number verification. | ✅ Enforced |
-| **Traffic Analysis** | **Fixed-size padding** (up to 64KB) + Poisson Cover Traffic. | ✅ Hardened |
-| **Anonymity** | Native SOCKS5/Tor transport support integrated. | ✅ Integrated |
-| **Side Channels** | Statistically stable timing profile under controlled benchmarks. | ✅ Verified |
-| **Rate Limiting** | Constant-time authentication path implementation. | ✅ Hardened |
+| **Identity (MITM)** | `Config::fortress_mode()` enforces Safety Number verification. | ✅ Policy Enforced |
+| **Traffic Analysis** | **Fixed-size padding** (up to 64KB) + Poisson Cover Traffic. | ✅ Logic Implemented |
+| **Anonymity** | Native SOCKS5/Tor transport support integrated. | ✅ Logic Integrated |
+| **Side Channels** | Statistically stable timing profile under controlled benchmarks. | ✅ Evaluated |
+| **Rate Limiting** | Constant-time authentication path implementation. | ✅ Designed for Resistance |
 
 ## Documentation
 
