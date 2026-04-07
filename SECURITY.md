@@ -12,50 +12,50 @@
 
 ---
 
-| Feature | Engineering Mechanism | Evaluation Evidence | Security Status |
-|--------|--------|--------|-----------------|
-| **Data Confidentiality** | ChaCha20-Poly1305 (256-bit) AEAD | Functional Tests | Logic Implemented |
-| **Quantum Resistance** | ML-KEM-768 + X25519 Hybrid | Handshake Logic | Under Evaluation |
-| **Handshake Safety** | Lexicographical Role Resolution | Determinism Tests | Logic Implemented |
-| **Forward Secrecy** | HMAC-SHA256 ratchet chains | Ratchet Tests | Logic Implemented |
-| **Side-Channel Defense** | `subtle` Constant-Time primitives | Statistical Bench | Internal Evaluation Ongoing |
-| **Memory Safety** | `Zeroize` on drop / memory pinning | Manual Code Review | Logic Implemented |
-| **Traffic Analysis** | Noise-prefix padding (up to 64KB) | Padding Tests | Logic Implemented |
-| **Identity Anchoring** | Cryptographic TOFU Pinning | MITM Rejection | Policy Enforced |
-| **DoS Protection** | Integrated rate-limiting paths | Benchmark Tests | Logic Implemented |
+## 1. Adversarial Model (Dolev-Yao)
+
+The Sibna Protocol is analyzed against a **Dolev-Yao** adversary $\mathcal{A}$ with the following capabilities:
+- **Network Access**: $\mathcal{A}$ can read, intercept, and inject any message on the relay or P2P transport layers.
+- **Session Compromise**: A compromise of $\mathcal{A}$'s session-specific ephemeral state does not impact the confidentiality of previous or future sessions (**Forward Secrecy / Break-in Recovery**).
+- **Hardness**: We assume $\mathcal{A}$ cannot solve the **Computational Diffie-Hellman (CDH)** or **Module-LWE** problems in polynomial time.
+
+## 2. Technical Mitigations & Engineering Status
+
+| Security Property | Engineering Mechanism | Status |
+|-------------------|-----------------------|--------|
+| **Confidentiality** | ChaCha20-Poly1305 AEAD | Implemented |
+| **Quantum Safety** | ML-KEM-768 Hybrid | Under Evaluation |
+| **Handshake Safety** | Lexicographical Role Resolution | Modeled |
+| **Forward Secrecy** | HMAC-SHA256 Ratchets | Implemented |
+| **Side-Channel Stability** | `subtle` Constant-Time Primitives | Internal Evaluation Ongoing |
+| **Memory Hygiene** | `Zeroize` & Memory Pinning | Implemented |
+| **Traffic Analysis** | Noise-Prefix Padding (up to 64KB) | Implemented |
+| **Identity Anchoring** | Cryptographic TOFU Pinning | Policy Enforced |
 
 ---
 
-## Non-Guarantees & Known Limitations
+## 3. Non-Guarantees & Known Limitations
 
-Sibna Protocol v3.0.0 is built on best-effort security engineering, but it does **not** provide guarantees against the following:
-
-1.  **Hardware-Level Side Channels**: Resistance is implemented at the software layer. Differential Power Analysis (DPA) or EM side-channels on physical hardware are not mitigated.
-2.  **Shared Cloud Environments**: In virtualized or multi-tenant cloud environments (e.g., AWS/GCP), micro-architectural attacks (Spectre/Meltdown style) may still pose a risk to constant-time execution.
-3.  **Untrusted OS/Root**: If the underlying Operating System is compromised, the protocol's memory pinning and secure storage can be bypassed by an attacker with root/kernel access.
-4.  **Future Quantum Algorithms**: While ML-KEM-768 provides currently accepted post-quantum resistance, it is not a guarantee against future theoretical advancements in quantum cryptanalysis.
+Sibna v3.0.0 is an experimental research prototype. It does **not** provide guarantees against:
+1.  **Hardware Side-Channels**: Resistance is software-layer only. Differential Power Analysis (DPA) is outside the design scope.
+2.  **Compromised Shared Infrastructure**: Micro-architectural attacks (e.g., Spectre) in virtualized cloud environments may impact timing stability.
+3.  **Root/Kernel Compromise**: A compromised host environment can bypass physical memory pinning and secure storage.
 
 ---
 
-## Threat Model & Dolev-Yao Adversary
+## 4. Formal Mitigation Strategies
 
-Sibna v3.0.0 defines a formal threat model covering both passive network monitoring and active identity substitution.
+### 4.1 Traffic Analysis (Passive Observer)
+- **Strategy:** Fixed-block padding with random noise prefixes and an internal encrypted length field.
+- **Observed Behavior:** Ciphertext length is decoupled from plaintext size up to the configured block boundary (1KB - 64KB).
 
-### 1. Passive Inference (Traffic Analysis)
-- **Mitigation:** Fixed-block padding with **Random Noise Prefixes** and an **Encrypted Length Field** inside the AEAD payload. This prevents an observer from inferring plaintext length or content type by inspecting ciphertext boundaries.
+### 4.2 Simultaneous Handshake (Role Confusion)
+- **Strategy:** Consensus-driven role resolution based on public key lexicographical order.
+- **Observed Behavior:** Initiator/Responder roles are resolved deterministically without server arbitration.
 
-### 2. Active Role Confusion (Simultaneous Handshake)
-- **Mitigation:** **Deterministic Role Resolution**. Simultaneous P2P connections are resolved by comparing the lexicographical order of identity public keys. This ensures absolute consensus on the "Initiator" and "Responder" roles, preventing session key reuse.
-
-### 3. Identity Substitution (MITM)
-- **Mitigation:** **Trust-on-First-Use (TOFU) Pinning**. The first observed identity key for a peer is cryptographically cached. Subsequent attempts to present a different key for the same identifier are rejected as an active attack.
-
----
-
-## Real-World Limitations
-
-- **DPA Protection:** While software-level timing is mitigated using constant-time primitives, hardware-level Differential Power Analysis (DPA) remains outside the protocol's current scope.
-- **Relay Metadata (Sealed Sender):** The relay server identifies the sender via JWT for routing and rate-limiting purposes but DOES NOT have access to the message contents. The design minimizes the metadata footprint on the infrastructure while maintaining operational stability.
+### 4.3 Identity Impersonation (MITM)
+- **Strategy:** Cryptographic Identity Pinning. 
+- **Observed Behavior:** Session establishment is aborted if a peer's identity key deviates from the pinned cache (TOFU).
 
 ---
 
