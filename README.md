@@ -1,4 +1,4 @@
-# Sibna Protocol v3.0.0 "Fortress"
+# Sibna Protocol v3.0.0 
 
 A high-security Rust implementation of the X3DH and Double Ratchet protocol — E2EE dual-licensed under Apache 2.0 / MIT.
 
