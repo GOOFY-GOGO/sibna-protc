@@ -15,7 +15,7 @@ A high-security Rust implementation of the X3DH and Double Ratchet protocol — 
 
 | Feature | Status | Reference |
 |--------|--------|--------|
-| X3DH v10 + Transcript Binding (BLAKE3) | ✅ | `crypto/kdf.rs`, `p2p/handshake.rs` |
+| X3DH v3 + Transcript Binding (BLAKE3) | ✅ | `crypto/kdf.rs`, `p2p/handshake.rs` |
 | Stealth Handshake (Identity Hiding in P2P) | ✅ | `p2p/handshake.rs:57` |
 | Double Ratchet (Forward Secrecy) | ✅ | `ratchet/` |
 | Hybrid PQC: X25519 + ML-KEM-768 | ✅ Default | `handshake/x3dh.rs` |

@@ -91,7 +91,7 @@ impl Drop for X3dhResult {
 ///
 /// # Returns
 /// X3DH result containing shared secret
-pub fn x3dh_initiator_v10(
+pub fn x3dh_initiator_v3(
     our_identity: &StaticSecret,
     our_ephemeral: &StaticSecret,
     peer_identity: &PublicKey,
@@ -99,6 +99,8 @@ pub fn x3dh_initiator_v10(
     peer_onetime_prekey: Option<&PublicKey>,
     #[cfg(feature = "pqc")]
     peer_pq_pk: Option<&Vec<u8>>,
+    our_device_id: &[u8; 16],
+    peer_device_id: &[u8; 16],
     transcript_hash_ext: &[u8; 32],
 ) -> ProtocolResult<X3dhResult> {
     // DH1: Our identity + peer's signed prekey
@@ -136,6 +138,8 @@ pub fn x3dh_initiator_v10(
     if let Some(prekey) = peer_onetime_prekey {
         hasher.update(prekey.as_bytes());
     }
+    hasher.update(our_device_id);
+    hasher.update(peer_device_id);
     let mut transcript_hash: [u8; 32] = hasher.finalize().into();
 
     // BIND EXTERNAL TRANSCRIPT (Audit v2.0):
@@ -210,7 +214,7 @@ pub fn x3dh_initiator_v10(
 ///
 /// # Returns
 /// X3DH result containing shared secret
-pub fn x3dh_responder_v10(
+pub fn x3dh_responder_v3(
     our_identity: &StaticSecret,
     our_signed_prekey: &StaticSecret,
     our_onetime_prekey: Option<&StaticSecret>,
@@ -220,6 +224,8 @@ pub fn x3dh_responder_v10(
     our_pq_sk: Option<&Vec<u8>>,
     #[cfg(feature = "pqc")]
     peer_pq_ct: Option<&Vec<u8>>,
+    our_device_id: &[u8; 16],
+    peer_device_id: &[u8; 16],
     transcript_hash_ext: &[u8; 32],
 ) -> ProtocolResult<X3dhResult> {
     // DH1: Our signed prekey + peer's identity
@@ -257,6 +263,8 @@ pub fn x3dh_responder_v10(
     if let Some(prekey) = our_onetime_prekey {
         hasher.update(PublicKey::from(prekey).as_bytes());
     }
+    hasher.update(our_device_id);
+    hasher.update(peer_device_id);
     let mut transcript_hash: [u8; 32] = hasher.finalize().into();
 
     // BIND EXTERNAL TRANSCRIPT (Audit v2.0):
@@ -438,39 +446,45 @@ mod tests {
 
         // A performs initiator handshake
         #[cfg(not(feature = "pqc"))]
-        let result_a = x3dh_initiator_v10(
+        let result_a = x3dh_initiator_v3(
             &a_identity,
             &a_ephemeral,
             &b_identity_public,
             &b_signed_prekey_public,
             Some(&b_onetime_prekey_public),
+            &[0u8; 16],
+            &[0u8; 16],
             &[0u8; 32],
         ).unwrap();
 
         #[cfg(feature = "pqc")]
-        let result_a = x3dh_initiator_v10(
+        let result_a = x3dh_initiator_v3(
             &a_identity,
             &a_ephemeral,
             &b_identity_public,
             &b_signed_prekey_public,
             Some(&b_onetime_prekey_public),
             None,
+            &[0u8; 16],
+            &[0u8; 16],
             &[0u8; 32],
         ).unwrap();
 
         // B performs responder handshake
         #[cfg(not(feature = "pqc"))]
-        let result_b = x3dh_responder_v10(
+        let result_b = x3dh_responder_v3(
             &b_identity,
             &b_signed_prekey,
             Some(&b_onetime_prekey),
             &a_identity_public,
             &a_ephemeral_public,
+            &[0u8; 16],
+            &[0u8; 16],
             &[0u8; 32],
         ).unwrap();
 
         #[cfg(feature = "pqc")]
-        let result_b = x3dh_responder_v10(
+        let result_b = x3dh_responder_v3(
             &b_identity,
             &b_signed_prekey,
             Some(&b_onetime_prekey),
@@ -478,6 +492,8 @@ mod tests {
             &a_ephemeral_public,
             None,
             None,
+            &[0u8; 16],
+            &[0u8; 16],
             &[0u8; 32],
         ).unwrap();
 
@@ -508,13 +524,15 @@ mod tests {
         let pq_sk_bytes = SerDes::into_bytes(pq_sk).to_vec();
 
         // A performs initiator handshake with PQC
-        let result_a = x3dh_initiator_v10(
+        let result_a = x3dh_initiator_v3(
             &a_identity,
             &a_ephemeral,
             &b_identity_public,
             &b_signed_prekey_public,
             None,
             Some(&pq_pk_bytes),
+            &[0u8; 16],
+            &[0u8; 16],
             &[0u8; 32],
         ).unwrap();
 
@@ -522,7 +540,7 @@ mod tests {
         let ct = result_a.pq_ciphertext.clone().unwrap();
 
         // B performs responder handshake with PQC
-        let result_b = x3dh_responder_v10(
+        let result_b = x3dh_responder_v3(
             &b_identity,
             &b_signed_prekey,
             None,
@@ -530,6 +548,8 @@ mod tests {
             &a_ephemeral_public,
             Some(&pq_sk_bytes),
             Some(&ct),
+            &[0u8; 16],
+            &[0u8; 16],
             &[0u8; 32],
         ).unwrap();
 

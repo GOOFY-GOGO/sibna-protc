@@ -123,7 +123,7 @@ impl RatchetKdf {
         let hkdf = Hkdf::<Sha256>::new(Some(root_key), dh_out);
 
         let mut okm = [0u8; 64];
-        hkdf.expand(b"SibnaRatchet_v9", &mut okm)
+        hkdf.expand(b"SibnaRatchet_v3", &mut okm)
             .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
         let mut new_rk = [0u8; KEY_LENGTH];
@@ -180,21 +180,20 @@ impl X3dhKdf {
         dh4: Option<&[u8; KEY_LENGTH]>,
         transcript_hash: &[u8; 32],
     ) -> CryptoResult<Zeroizing<[u8; KEY_LENGTH]>> {
-        // Concatenate all DH results + transcript hash
-        let mut concatenated = Vec::with_capacity(KEY_LENGTH * 5);
+        // Concatenate all DH results
+        let mut concatenated = Vec::with_capacity(KEY_LENGTH * 4);
         concatenated.extend_from_slice(dh1);
         concatenated.extend_from_slice(dh2);
         concatenated.extend_from_slice(dh3);
         if let Some(dh4) = dh4 {
             concatenated.extend_from_slice(dh4);
         }
-        concatenated.extend_from_slice(transcript_hash);
 
-        // Use HKDF to derive final shared secret
-        let hkdf = Hkdf::<Sha256>::new(None, &concatenated);
+        // Use HKDF with transcript hash as SALT for domain separation
+        let hkdf = Hkdf::<Sha256>::new(Some(transcript_hash), &concatenated);
         let mut okm = [0u8; KEY_LENGTH];
 
-        hkdf.expand(b"SibnaX3DH_v10", &mut okm)
+        hkdf.expand(b"SibnaX3DH_v3", &mut okm)
             .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
         concatenated.zeroize();
@@ -211,8 +210,8 @@ impl X3dhKdf {
         pq_shared_secret: &[u8; 32],
         transcript_hash: &[u8; 32],
     ) -> CryptoResult<Zeroizing<[u8; KEY_LENGTH]>> {
-        // Concatenate all DH results + PQ shared secret + transcript hash
-        let mut concatenated = Vec::with_capacity(KEY_LENGTH * 6);
+        // Concatenate all DH results + PQ shared secret
+        let mut concatenated = Vec::with_capacity(KEY_LENGTH * 5);
         concatenated.extend_from_slice(dh1);
         concatenated.extend_from_slice(dh2);
         concatenated.extend_from_slice(dh3);
@@ -220,14 +219,13 @@ impl X3dhKdf {
             concatenated.extend_from_slice(dh4);
         }
         concatenated.extend_from_slice(pq_shared_secret);
-        concatenated.extend_from_slice(transcript_hash);
 
-        // Use HKDF to derive final hybrid shared secret
+        // Use HKDF with transcript hash as SALT for domain separation
         // Note the version bump to v10 for PQC-capable core
-        let hkdf = Hkdf::<Sha256>::new(None, &concatenated);
+        let hkdf = Hkdf::<Sha256>::new(Some(transcript_hash), &concatenated);
         let mut okm = [0u8; KEY_LENGTH];
 
-        hkdf.expand(b"SibnaPQX3DH_v10", &mut okm)
+        hkdf.expand(b"SibnaPQX3DH_v3", &mut okm)
             .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
         concatenated.zeroize();

@@ -41,7 +41,7 @@ fn bench_constant_time_crypto_handler() {
     let b_mean: f64 = b_times.iter().sum::<u128>() as f64 / b_times.len() as f64;
     
     let diff = (a_mean - b_mean).abs();
-    let threshold = 100.0; // 100ns allows for OS jitter on non-isolated systems
+    let threshold = 100.0; // 100ns allows for OS jitter on non-real-time systems
     
     println!("Key A Mean: {:.4} ns", a_mean);
     println!("Key B Mean: {:.4} ns", b_mean);

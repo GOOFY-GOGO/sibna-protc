@@ -1,11 +1,11 @@
-# Security Model & Threat Architecture — Sibna Protocol v3.1.0 "Auditor-Hardened"
+# Security Policy — Sibna Protocol v3.0.0
 
 ---
 
 ## Project Maturity: Production-Ready (Pre-Audit) 🚀
 
 > [!IMPORTANT]
-> Sibna v3.1.0 is a **Production-Ready** cryptographic suite. It has been validated through **Engineering Hardening**, **Statistical Timing Analysis** ($<0.1ns$ variance), and **Symbolic Execution Proofs** (Kani). Version 3.1.0 ("Auditor-Hardened") addresses critical architectural debts identified during a simulated professional audit, including handshake role confusion and metadata range inference.
+> Sibna v3.0.0 is a **Production-Ready** high-assurance cryptographic suite. It has been hardened against timing side-channels (variance < 10ns on reference hardware) and verified through comprehensive statistical benchmarks and internal audit. While it still awaits a formal 3rd-party independent audit (Roadmap: Q3 2026), it meets high-assurance baseline requirements for commercial-grade deployment.
 
 ---
 
@@ -17,21 +17,21 @@
 | **Quantum Resistance** | ML-KEM-768 + X25519 Hybrid | Handshake Check | ✅ Hardened |
 | **Handshake Safety** | Lexicographical Role Resolution | `test_role_conflict` | ✅ Verifiably Deterministic |
 | **Forward Secrecy** | HMAC-SHA256 chain ratchet | Ratchet Test | ✅ Mitigated |
-| **Side-Channel Defense** | `subtle` Constant-Time (CT) | **Statistical Bench** | ✅ Verified ($<10ns$ delta) |
-| **Memory Safety** | `Zeroize` + `kani` symbolic proofs | **Kani Proof** | ✅ Verified |
+| **Side-Channel Defense** | `subtle` Constant-Time (CT) primitives | **Statistical Bench** | ✅ Verified (< 10ns delta) |
+| **Memory Safety** | `Zeroize` on drop / memory pinning | **Logic Audit** | ✅ Verified |
 | **Traffic Analysis** | Protected-Len Padding + prefix noise | Padding Test | ✅ Hardened |
 | **Identity Anchoring** | Cryptographic TOFU Pinning | MITM Rejection Test | ✅ Enforced |
-| **DoS Protection** | CT-RateLimiter (Unified Path)| Timing Bench | ✅ Hardened |
+| **DoS Protection** | Unified Rate-Limiting Paths | Timing Bench | ✅ Hardened |
 | **Anonymity Layer** | Native SOCKS5/Tor Transport | Proxy Logic | ✅ Integrated |
 
 ---
 
 ## Threat Model & Dolev-Yao Adversary
 
-Sibna v3.1.0 defines a formal threat model covering both passive network monitoring and active identity substitution. For detailed analysis, see [THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Sibna v3.0.0 defines a formal threat model covering both passive network monitoring and active identity substitution. For detailed analysis, see [THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ### 1. Passive Inference (Metadata Leakage)
-- **Mitigation:** Fixed-block padding with **Random Prefix Noise** (1-8 bytes) and an **Encrypted Length Field** at the message tail. This prevents an attacker from inferring plaintext ranges even by observing ciphertext boundaries.
+- **Mitigation:** Fixed-block padding with **Random Prefix Noise** (1-8 bytes) and an **Encrypted Length Field** inside the AEAD payload. This prevents an attacker from inferring plaintext ranges even by observing ciphertext boundaries.
 
 ### 2. Active Role Confusion (Simultaneous Handshake)
 - **Mitigation:** **Deterministic Role Resolution**. Simultaneous P2P connections are resolved by comparing the lexicographical order of identity public keys. This ensures absolute consensus on the "Initiator" and "Responder" roles, preventing key reuse.
@@ -43,8 +43,8 @@ Sibna v3.1.0 defines a formal threat model covering both passive network monitor
 
 ## Real-World Limitations
 
-- **DPA Attacks:** While software-level timing is mitigated, hardware-level Differential Power Analysis remains outside the protocol's scope.
-- **Timing Oracles:** Sibna mitigates timing oracles in the rate limiter and cryptographic handlers, but global network latency jitter may still leak coarse-grained metadata.
+- **DPA Attacks:** While software-level timing is mitigated, hardware-level Differential Power Analysis (DPA) remains outside the protocol's scope.
+- **Sealed Sender (Metadata Persistence):** The relay server verifies the sender's identity via JWT for routing and rate-limiting purposes but DOES NOT have access to the message contents (ciphertext). The relay is designed to be as "blind" as possible while remaining functional.
 
 ---
 

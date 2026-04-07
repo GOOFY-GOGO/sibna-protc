@@ -1,4 +1,4 @@
-//! Integration tests for Sibna Protocol v9
+//! Integration tests for Sibna Protocol v3
 //!
 //! These tests verify end-to-end behaviour of the full protocol stack.
 //! They are separate from unit tests to avoid coupling implementation details.
@@ -242,7 +242,7 @@ fn test_weak_key_rejected() {
 
 #[test]
 fn test_x3dh_shared_secrets_match() {
-    use sibna_core::handshake::x3dh::{x3dh_initiator, x3dh_responder, verify_shared_secret};
+    use sibna_core::handshake::x3dh::{x3dh_initiator_v3, x3dh_responder_v3, verify_shared_secret};
 
     let alice_identity  = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let alice_ephemeral = StaticSecret::random_from_rng(&mut rand_core::OsRng);
@@ -256,16 +256,18 @@ fn test_x3dh_shared_secrets_match() {
     let bob_opk        = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let bob_opk_pub    = PublicKey::from(&bob_opk);
 
-    let result_alice = x3dh_initiator(
+    let result_alice = x3dh_initiator_v3(
         &alice_identity, &alice_ephemeral,
         &bob_id_pub, &bob_spk_pub, Some(&bob_opk_pub),
         None,
+        &[0u8; 16], &[0u8; 16], &[0u8; 32]
     ).unwrap();
 
-    let result_bob = x3dh_responder(
+    let result_bob = x3dh_responder_v3(
         &bob_identity, &bob_spk, Some(&bob_opk),
         &alice_id_pub, &alice_eph_pub,
         None, None,
+        &[0u8; 16], &[0u8; 16], &[0u8; 32]
     ).unwrap();
 
     assert!(verify_shared_secret(&result_alice, &result_bob),
@@ -274,7 +276,7 @@ fn test_x3dh_shared_secrets_match() {
 
 #[test]
 fn test_x3dh_without_onetime_prekey() {
-    use sibna_core::handshake::x3dh::{x3dh_initiator, x3dh_responder, verify_shared_secret};
+    use sibna_core::handshake::x3dh::{x3dh_initiator_v3, x3dh_responder_v3, verify_shared_secret};
 
     let a_id  = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let a_eph = StaticSecret::random_from_rng(&mut rand_core::OsRng);
@@ -286,8 +288,8 @@ fn test_x3dh_without_onetime_prekey() {
     let b_spk = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let b_spk_pub = PublicKey::from(&b_spk);
 
-    let ra = x3dh_initiator(&a_id, &a_eph, &b_id_pub, &b_spk_pub, None, None).unwrap();
-    let rb = x3dh_responder(&b_id, &b_spk, None, &a_id_pub, &a_eph_pub, None, None).unwrap();
+    let ra = x3dh_initiator_v3(&a_id, &a_eph, &b_id_pub, &b_spk_pub, None, None, &[0u8; 16], &[0u8; 16], &[0u8; 32]).unwrap();
+    let rb = x3dh_responder_v3(&b_id, &b_spk, None, &a_id_pub, &a_eph_pub, None, None, &[0u8; 16], &[0u8; 16], &[0u8; 32]).unwrap();
 
     assert!(verify_shared_secret(&ra, &rb));
 }

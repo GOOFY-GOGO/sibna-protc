@@ -172,8 +172,20 @@ pub async fn prove_handler(
         return (StatusCode::UNAUTHORIZED, "Challenge expired").into_response();
     }
 
-    // 2. Verify the challenge matches what was sent
-    if req.challenge_hex != expected_challenge_hex {
+    // 2. Verify the challenge matches what was sent using constant-time comparison
+    let req_challenge_bytes = match hex::decode(&req.challenge_hex) {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid challenge hex").into_response(),
+    };
+    let expected_challenge_bytes = match hex::decode(expected_challenge_hex) {
+        Ok(b) => b,
+        Err(_) => {
+            state.db.tree_challenges.remove(db_key.as_bytes()).ok();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Challenge integrity error").into_response();
+        }
+    };
+
+    if req_challenge_bytes.ct_eq(&expected_challenge_bytes).unwrap_u8() == 0 {
         return (StatusCode::UNAUTHORIZED, "Challenge mismatch").into_response();
     }
 

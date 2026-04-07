@@ -468,6 +468,7 @@ impl SecureContext {
         peer_identity_key: Option<&[u8]>,
         peer_signed_prekey: Option<&[u8]>,
         peer_onetime_prekey: Option<&[u8]>,
+        peer_device_id: Option<[u8; 16]>,
         prologue: Option<&[u8]>,
     ) -> ProtocolResult<Vec<u8>> {
         // Check rate limit
@@ -492,7 +493,8 @@ impl SecureContext {
             .with_config(self.config.clone())
             .with_keystore(&*keystore)
             .with_random(&*random)
-            .with_role(role);
+            .with_role(role)
+            .with_our_device_id(self.device_id);
 
         if let Some(pk) = peer_identity_key {
             builder = builder.with_peer_identity_key(pk)?;
@@ -505,6 +507,10 @@ impl SecureContext {
         }
         if let Some(p) = prologue {
             builder = builder.with_prologue(p);
+        }
+
+        if let Some(did) = peer_device_id {
+            builder = builder.with_peer_device_id(did);
         }
 
         let mut handshake = builder.build()?;

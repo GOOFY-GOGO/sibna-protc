@@ -48,7 +48,7 @@ async fn wait_for_server(client: &reqwest::Client, server_url: &str) -> bool {
 
 #[tokio::test]
 async fn run_all_security_audits() {
-    let test_db_path = format!("test_db_v11_{}", rand::random::<u32>());
+    let test_db_path = format!("test_db_v3_{}", rand::random::<u32>());
     let port = 8000 + (rand::random::<u16>() % 10000);
     let server_url = format!("http://127.0.0.1:{}", port);
 

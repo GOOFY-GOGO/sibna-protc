@@ -6,7 +6,7 @@
 //!   2. Correlate message TIMING (activity patterns reveal social graph)
 //!
 //! Solutions implemented here:
-//!   - Constant-size padding (PKCS#7-style, block = 1024 bytes)
+//!   - Constant-size padding (Hardened format from padding.rs)
 //!   - Timing jitter: server delays delivery by a random 0-500ms
 //!   - End-to-end signed envelope: protects against server tampering
 
@@ -14,50 +14,20 @@ use rand::Rng;
 
 /// Target block size for padding (1024 bytes)
 /// All messages are padded to the nearest multiple of this value
-pub const PADDING_BLOCK_SIZE: usize = 1024;
+pub use crate::crypto::padding::BLOCK_SIZE_STANDARD as PADDING_BLOCK_SIZE;
 
 /// Maximum random delivery jitter in milliseconds
 pub const MAX_JITTER_MS: u64 = 500;
 
 /// Pad a message payload to the nearest multiple of PADDING_BLOCK_SIZE
-///
-/// Format: [2 bytes LE: padding_len] [original payload] [N bytes random padding]
-///
-/// An attacker watching encrypted traffic sees only multiples of 1024 bytes,
-/// making size-based correlation attacks statistically much harder.
 pub fn pad_payload(payload: &[u8]) -> Vec<u8> {
-    let unpadded_len = payload.len() + 2; // +2 for the length indicator
-    let padded_len = round_up_to_block(unpadded_len);
-    let padding_needed = padded_len - unpadded_len;
-
-    let mut rng = rand::thread_rng();
-    let mut out = Vec::with_capacity(padded_len);
-
-    // Indicator: 2-byte LE length of padding
-    out.extend_from_slice(&(padding_needed as u16).to_le_bytes());
-    out.extend_from_slice(payload);
-
-    // Fill padding with random bytes (not zeros — zeros are distinguishable)
-    let padding: Vec<u8> = (0..padding_needed).map(|_| rng.gen::<u8>()).collect();
-    out.extend_from_slice(&padding);
-
-    out
+    crate::crypto::padding::pad_message(payload, crate::crypto::padding::PaddingMode::Standard)
 }
 
 /// Remove padding from a received payload
 pub fn unpad_payload(padded: &[u8]) -> Result<Vec<u8>, PaddingError> {
-    if padded.len() < 2 {
-        return Err(PaddingError::TooShort);
-    }
-
-    let padding_needed = u16::from_le_bytes([padded[0], padded[1]]) as usize;
-    
-    if padded.len() < 2 + padding_needed {
-        return Err(PaddingError::InvalidPadding);
-    }
-
-    let payload_len = padded.len() - 2 - padding_needed;
-    Ok(padded[2..2 + payload_len].to_vec())
+    crate::crypto::padding::unpad_message(padded)
+        .map_err(|_| PaddingError::InvalidPadding)
 }
 
 fn round_up_to_block(len: usize) -> usize {

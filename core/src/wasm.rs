@@ -1,4 +1,4 @@
-//! WASM Bindings for Sibna Protocol v10
+//! WASM Bindings for Sibna Protocol v3
 //!
 //! Provides `wasm-bindgen` exported functions for use in web applications
 //! (TypeScript, JavaScript). Uses thread-local storage for the `SecureContext`
@@ -108,7 +108,7 @@ mod wasm_impl {
             let peer_spk: Option<&[u8]> = Some(&bundle.signed_prekey);
             let peer_opk: Option<&[u8]> = bundle.onetime_prekey.as_ref().map(|k| k.as_ref());
 
-            ctx.perform_handshake(session_id, initiator, peer_ik, peer_spk, peer_opk, None)
+            ctx.perform_handshake(session_id, initiator, peer_ik, peer_spk, peer_opk, None, None)
                 .map_err(|e| JsValue::from_str(&format!("Handshake failed: {}", e)))?;
 
             Ok(())

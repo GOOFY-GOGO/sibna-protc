@@ -46,6 +46,10 @@ pub struct HandshakeBuilder {
     prologue: Option<Vec<u8>>,
     /// Associated data
     associated_data: Option<Vec<u8>>,
+    /// Our device ID
+    our_device_id: [u8; 16],
+    /// Peer device ID
+    peer_device_id: [u8; 16],
 }
 
 impl HandshakeBuilder {
@@ -69,6 +73,8 @@ impl HandshakeBuilder {
             peer_pq_ct: None,
             prologue: None,
             associated_data: None,
+            our_device_id: [0u8; 16],
+            peer_device_id: [0u8; 16],
         }
     }
 
@@ -189,6 +195,18 @@ impl HandshakeBuilder {
         self
     }
 
+    /// Set our device ID
+    pub fn with_our_device_id(mut self, id: [u8; 16]) -> Self {
+        self.our_device_id = id;
+        self
+    }
+
+    /// Set peer device ID
+    pub fn with_peer_device_id(mut self, id: [u8; 16]) -> Self {
+        self.peer_device_id = id;
+        self
+    }
+
     /// Build the handshake
     pub fn build(self) -> ProtocolResult<X3dhHandshake> {
         // Validate required fields
@@ -216,6 +234,8 @@ impl HandshakeBuilder {
             peer_pq_ct: self.peer_pq_ct,
             prologue: self.prologue,
             associated_data: self.associated_data,
+            our_device_id: self.our_device_id,
+            peer_device_id: self.peer_device_id,
         })
     }
 }
@@ -259,6 +279,10 @@ pub struct X3dhHandshake {
     prologue: Option<Vec<u8>>,
     /// Associated data
     associated_data: Option<Vec<u8>>,
+    /// Our device ID
+    our_device_id: [u8; 16],
+    /// Peer device ID
+    peer_device_id: [u8; 16],
 }
 
 impl X3dhHandshake {
@@ -272,7 +296,7 @@ impl X3dhHandshake {
 
     /// Perform initiator handshake
     fn perform_initiator(&mut self) -> ProtocolResult<HandshakeOutput> {
-        use crate::handshake::x3dh::x3dh_initiator_v10;
+        use crate::handshake::x3dh::x3dh_initiator_v3;
 
         // Get our identity key
         let our_identity = self.keystore.get_identity_keypair()?;
@@ -297,7 +321,7 @@ impl X3dhHandshake {
         let ephemeral_public = PublicKey::from(&ephemeral_secret);
 
         // Perform X3DH initiator
-        let mut x3dh_result = x3dh_initiator_v10(
+        let mut x3dh_result = x3dh_initiator_v3(
             our_identity.x25519_secret.as_ref().ok_or(ProtocolError::KeyNotFound)?,
             &ephemeral_secret,
             &peer_ik_pub,
@@ -305,6 +329,8 @@ impl X3dhHandshake {
             peer_opk_pub.as_ref(),
             #[cfg(feature = "pqc")]
             self.peer_pq_pk.as_ref(),
+            &self.our_device_id,
+            &self.peer_device_id,
             &[0u8; 32], // Default transcript hash for non-P2P flow
         )?;
 
@@ -329,7 +355,7 @@ impl X3dhHandshake {
 
     /// Perform responder handshake
     fn perform_responder(&mut self) -> ProtocolResult<HandshakeOutput> {
-        use crate::handshake::x3dh::x3dh_responder_v10;
+        use crate::handshake::x3dh::x3dh_responder_v3;
 
         // Get our keys
         let our_identity = self.keystore.get_identity_keypair()?;
@@ -355,7 +381,7 @@ impl X3dhHandshake {
         };
 
         // Perform X3DH responder
-        let x3dh_result = x3dh_responder_v10(
+        let x3dh_result = x3dh_responder_v3(
             our_identity.x25519_secret.as_ref().ok_or(ProtocolError::KeyNotFound)?,
             &our_signed_prekey,
             our_opk.as_ref(),
@@ -365,6 +391,8 @@ impl X3dhHandshake {
             self.our_pq_sk.as_ref(),
             #[cfg(feature = "pqc")]
             self.peer_pq_ct.as_ref(),
+            &self.our_device_id,
+            &self.peer_device_id,
             &[0u8; 32], // Default transcript hash for non-P2P flow
         )?;
 

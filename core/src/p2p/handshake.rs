@@ -227,16 +227,20 @@ pub async fn initiator_handshake(
             &peer_spk_pub,
             peer_opk_pub.as_ref(),
             bundle.pq_signed_prekey.as_ref(),
+            &our_device_id,
+            &stealth_bundle.responder_device_id,
             transcript_hash.as_bytes(),
         ).map_err(|e| P2pError::Handshake(format!("x3dh_initiator: {:?}", e)))?;
 
         #[cfg(not(feature = "pqc"))]
-        let mut x3dh_result = crate::handshake::x3dh::x3dh_initiator_v10(
+        let mut x3dh_result = crate::handshake::x3dh::x3dh_initiator_v3(
             our_identity_x,
             &x3dh_ephemeral,
             &peer_identity_x,
             &peer_spk_pub,
             peer_opk_pub.as_ref(),
+            &our_device_id,
+            &stealth_bundle.responder_device_id,
             transcript_hash.as_bytes(),
         ).map_err(|e| P2pError::Handshake(format!("x3dh_initiator: {:?}", e)))?;
 
@@ -399,16 +403,20 @@ pub async fn responder_handshake(
             &initiator_eph_pub,
             pq_sk.as_ref(),
             stealth_envelope.pq_ciphertext.as_ref(),
+            &our_device_id,
+            &initiator_device_id,
             transcript_hash.as_bytes(),
         ).map_err(|e| P2pError::Handshake(format!("x3dh_responder: {:?}", e)))?;
 
         #[cfg(not(feature = "pqc"))]
-        let x3dh_result = crate::handshake::x3dh::x3dh_responder_v10(
+        let x3dh_result = crate::handshake::x3dh::x3dh_responder_v3(
             our_identity_x,
             &spk_secret,
             opk_secret.as_ref(),
             &initiator_identity_x,
             &initiator_eph_pub,
+            &our_device_id,
+            &initiator_device_id,
             transcript_hash.as_bytes(),
         ).map_err(|e| P2pError::Handshake(format!("x3dh_responder: {:?}", e)))?;
 
