@@ -2,10 +2,10 @@
 
 ---
 
-## Project Maturity: Production-Ready (Pre-Audit) 🚀
+## Project Maturity: Hardened Security-Oriented Implementation (Pre-Audit)
 
 > [!IMPORTANT]
-> Sibna v3.0.0 is a **Production-Ready** high-assurance cryptographic suite. It has been hardened against timing side-channels (variance < 10ns on reference hardware) and verified through comprehensive statistical benchmarks and internal audit. While it still awaits a formal 3rd-party independent audit (Roadmap: Q3 2026), it meets high-assurance baseline requirements for commercial-grade deployment.
+> Sibna v3.0.0 is a security-hardened cryptographic suite. It has been engineered to mitigate timing side-channels and validated through statistical benchmarks and internal architectural review. While it awaits a formal 3rd-party independent audit (Roadmap: Q3 2026), it is built to high-assurance baseline requirements for sensitive deployments.
 
 ---
 
@@ -13,41 +13,42 @@
 
 | Feature | Engineering Mechanism | Evidence | Security Status |
 |--------|--------|--------|-----------------|
-| **Data Confidentiality** | ChaCha20-Poly1305 (256-bit) AEAD | Test Suite | ✅ Mitigated |
-| **Quantum Resistance** | ML-KEM-768 + X25519 Hybrid | Handshake Check | ✅ Hardened |
-| **Handshake Safety** | Lexicographical Role Resolution | `test_role_conflict` | ✅ Verifiably Deterministic |
-| **Forward Secrecy** | HMAC-SHA256 chain ratchet | Ratchet Test | ✅ Mitigated |
-| **Side-Channel Defense** | `subtle` Constant-Time (CT) primitives | **Statistical Bench** | ✅ Verified (< 10ns delta) |
-| **Memory Safety** | `Zeroize` on drop / memory pinning | **Logic Audit** | ✅ Verified |
-| **Traffic Analysis** | Protected-Len Padding + prefix noise | Padding Test | ✅ Hardened |
-| **Identity Anchoring** | Cryptographic TOFU Pinning | MITM Rejection Test | ✅ Enforced |
-| **DoS Protection** | Unified Rate-Limiting Paths | Timing Bench | ✅ Hardened |
-| **Anonymity Layer** | Native SOCKS5/Tor Transport | Proxy Logic | ✅ Integrated |
+| **Data Confidentiality** | ChaCha20-Poly1305 (256-bit) AEAD | Functional Tests | ✅ Mitigated |
+| **Quantum Resistance** | ML-KEM-768 + X25519 Hybrid | Handshake Logic | ✅ Hardened |
+| **Handshake Safety** | Lexicographical Role Resolution | Determinism Tests | ✅ Verified |
+| **Forward Secrecy** | HMAC-SHA256 ratchet chains | Ratchet Tests | ✅ Mitigated |
+| **Side-Channel Defense** | `subtle` Constant-Time primitives | **Statistical Bench** | ✅ Hardened |
+| **Memory Safety** | `Zeroize` on drop / memory pinning | Manual Audit | ✅ Verified |
+| **Traffic Analysis** | Noise-prefix padding (up to 64KB) | Padding Tests | ✅ Hardened |
+| **Identity Anchoring** | Cryptographic TOFU Pinning | MITM Rejection | ✅ Enforced |
+| **DoS Protection** | Integrated rate-limiting paths | Benchmark Tests | ✅ Hardened |
 
 ---
 
 ## Threat Model & Dolev-Yao Adversary
 
-Sibna v3.0.0 defines a formal threat model covering both passive network monitoring and active identity substitution. For detailed analysis, see [THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Sibna v3.0.0 defines a formal threat model covering both passive network monitoring and active identity substitution.
 
-### 1. Passive Inference (Metadata Leakage)
-- **Mitigation:** Fixed-block padding with **Random Prefix Noise** (1-8 bytes) and an **Encrypted Length Field** inside the AEAD payload. This prevents an attacker from inferring plaintext ranges even by observing ciphertext boundaries.
+### 1. Passive Inference (Traffic Analysis)
+- **Mitigation:** Fixed-block padding with **Random Noise Prefixes** and an **Encrypted Length Field** inside the AEAD payload. This prevents an observer from inferring plaintext length or content type by inspecting ciphertext boundaries.
 
 ### 2. Active Role Confusion (Simultaneous Handshake)
-- **Mitigation:** **Deterministic Role Resolution**. Simultaneous P2P connections are resolved by comparing the lexicographical order of identity public keys. This ensures absolute consensus on the "Initiator" and "Responder" roles, preventing key reuse.
+- **Mitigation:** **Deterministic Role Resolution**. Simultaneous P2P connections are resolved by comparing the lexicographical order of identity public keys. This ensures absolute consensus on the "Initiator" and "Responder" roles, preventing session key reuse.
 
 ### 3. Identity Substitution (MITM)
-- **Mitigation:** **Trust-on-First-Use (TOFU) Pinning**. The first observed identity key for a peer is cryptographically cached. Sub-sequent attempts to present a different key are rejected as an active attack.
+- **Mitigation:** **Trust-on-First-Use (TOFU) Pinning**. The first observed identity key for a peer is cryptographically cached. Subsequent attempts to present a different key for the same identifier are rejected as an active attack.
 
 ---
 
 ## Real-World Limitations
 
-- **DPA Attacks:** While software-level timing is mitigated, hardware-level Differential Power Analysis (DPA) remains outside the protocol's scope.
-- **Sealed Sender (Metadata Persistence):** The relay server verifies the sender's identity via JWT for routing and rate-limiting purposes but DOES NOT have access to the message contents (ciphertext). The relay is designed to be as "blind" as possible while remaining functional.
+- **DPA Protection:** While software-level timing is mitigated using constant-time primitives, hardware-level Differential Power Analysis (DPA) remains outside the protocol's current scope.
+- **Relay Metadata (Sealed Sender):** The relay server identifies the sender via JWT for routing and rate-limiting purposes but DOES NOT have access to the message contents. The design minimizes the metadata footprint on the infrastructure while maintaining operational stability.
 
 ---
 
 ## Vulnerability Disclosure
 
-📧 Contact: `sibnaa@zohomail.com`
+**Do not open public issues for security vulnerabilities.**  
+Please report security concerns privately to:  
+📧 `sibnaa@zohomail.com`
