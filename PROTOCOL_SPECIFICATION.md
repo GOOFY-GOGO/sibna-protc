@@ -1,8 +1,16 @@
-# Sibna Protocol Specification — v3.0.0
+# Sibna Protocol Specification — v3.0.0 "Fortress"
 
 ---
 
-## 1. Key Agreement: X3DH v3
+## 1. Definitions & Terminology
+
+The following keywords are used in this specification to define protocol behavior:
+- **MUST**: Indicates a mandatory requirement for security or interoperability.
+- **SHOULD**: Indicates a recommended but non-mandatory behavior.
+- **MAY**: Indicates an optional feature.
+- **Protocol Invariant**: A security property that must hold true across all valid states and transitions of the protocol world-view.
+
+## 2. Key Agreement: X3DH v3
 
 ### 1.1 Key Types
 
@@ -126,9 +134,53 @@ Sibna v3.0.0 is a hybrid design influenced by the Signal and Noise protocols, wi
 
 ---
 
-## 9. Adversarial Model (Formal)
+## 10. Handshake Message Formats (Formal Specification)
 
-We define a **Dolev-Yao** style adversary with the following capabilities:
-1.  **Network Control**: Full control over all relayed and P2P traffic (Read, Delete, Inject).
-2.  **Ephemerality**: Access to session-specific ephemeral keys does not compromise past or future sessions (forward secrecy).
-3.  **Limitations**: The adversary is computationally bounded and cannot solve the CDH or Module-LWE problems within the security parameter $2^{128}$.
+Handshake messages MUST follow the following binary structure. Fields are in Little-Endian (LE) format where applicable.
+
+### 10.1 `HandshakeInitiate` (Alice -> Bob)
+```rust
+struct HandshakeInitiate {
+    version: u8,               // Protocol context (MUST be 3)
+    ephemeral_pk: [u8; 32],    // EK_A (X25519)
+    identity_pk: [u8; 32],     // IK_A (Ed25519)
+    kem_ciphertext: [u8; 1088], // ML-KEM-768 ciphertext (ss_kem)
+    transcript_hash: [u8; 32], // Hash of IDs and Keys (BLAKE3)
+    signature: [u8; 64],       // Ed25519 signature of the hash
+    device_id: [u8; 16],       // Initiator device identifier
+}
+```
+
+### 10.2 `HandshakeResponse` (Bob -> Alice)
+```rust
+struct HandshakeResponse {
+    version: u8,               // Protocol context (MUST be 3)
+    ephemeral_pk: [u8; 32],    // EK_B (X25519)
+    acknowledgment: [u8; 32],  // BLAKE3 hash of received initiate
+}
+```
+
+---
+
+## 11. Security Goals & Protocol Invariants
+
+The Sibna Protocol is designed to ensure the following fundamental invariants. A violation of any invariant constitutes a protocol-level security breakage.
+
+| Invariant | Goal | Description |
+|-----------|------|-------------|
+| **Key Indistinguishability** | Confidentiality | The derived session key `SK` MUST be indistinguishable from random to an adversary $\mathcal{A}$ under the CDH + LWE hardness assumptions. |
+| **Transcript Constancy** | Integrity | The handshake MUST fail if any participating public key or device identifier is modified during transport (enforced by BLAKE3 transcript binding). |
+| **Session Isolation** | Forward Secrecy | A compromise of current `message_key[n]` MUST NOT compromise `message_key[n-1]` (enforced by immediate zeroization of keys). |
+| **Healing Consistency** | PCS | After a successful DH ratchet round-trip, the `root_key` MUST be refreshed, healing the session from previous leakage. |
+| **Identity Uniqueness** | Authenticity | A single session MUST NOT be established between different identity pairs (enforced by IK_A \|\| IK_B binding in the transcript). |
+
+---
+
+## 12. Deniability & Privacy Goals
+
+| Property | Level | Engineering Evidence |
+|----------|-------|----------------------|
+| **Perfect Forward Secrecy** | Full | HMAC-SHA256 ratchet chains + DH Ephemeral update. |
+| **Post-Compromise Security** | Full | Independent DH Ratchet round-trips. |
+| **Identity Hiding** | Partial | Handshake uses Ed25519 over transcript hash; identity keys are known to the relay but payload is sealed. |
+| **Traffic Anonymity** | Integrated | Native support for SOCKS5/Tor to decouple IP identity. |

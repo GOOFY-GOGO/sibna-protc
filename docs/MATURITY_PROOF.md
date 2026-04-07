@@ -2,34 +2,31 @@
 
 This document outlines the technical design decisions and internal evaluation metrics that support the security properties of Sibna Protocol v3.0.0.
 
-## 1. Statistical Timing Analysis (Internal Evaluation)
-We evaluate the "Constant-Time" properties of our implementation through empirical measurement under controlled test conditions.
-- **Location**: `core/tests/statistical_timing_test.rs`
-- **Methodology**: 100,000 iterations comparing "Weak" (Zero) keys vs "Strong" (Random) keys.
-- **Observed Behavior**: No statistically significant difference in mean execution time was observed between test sets. Variations remained within established standard deviation margins for the target OS environment.
-- **Caveat**: Statistical benchmarking provides evidence of effective software-layer mitigation on specific tested hardware, but it does not constitute a formal mathematical proof of side-channel resistance across all physical architectures.
+## 1. Statistical Timing Evaluation
+We evaluate the constant-time properties of the implementation through empirical measurement under controlled conditions.
+- **Methodology**: 100,000 iterations comparing cryptographic operations using distinct key weights.
+- **Evaluation**: The design aims for a statistically stable timing profile. Under testing, no deviations susceptible to timing attacks were detected within the standard deviation of the targeted OS environment.
 
 ## 2. Structural Security Engineering
-We utilize established cryptographic primitives and software patterns to mitigate common vulnerability classes.
-- **Software Mitigation**: Security-critical comparisons (HMAC, Challenge, Padding) are implemented using `subtle::ConstantTimeEq`. This is designed to reduce the probability of exploitable software-based timing oracles.
-- **KDF Domain Separation**: HKDF-SHA256 uses transcript-bound salts to enforce domain separation between cryptographic operations.
-- **Buffer Hygiene**: Implementation includes explicit `Zeroize` on drop and memory-pinning (`mlock`) to limit the temporal exposure of sensitive key material in RAM.
+- **Side-Channel Mitigation**: Security-critical comparisons are implemented using `subtle::ConstantTimeEq` to reduce the risk of software-based timing oracles.
+- **KDF Hardening**: Derived keys are cryptographically bound to the full handshake transcript, designed to prevent pre-computation and UKS attacks.
+- **Buffer Hygiene**: Memory zeroization (`Zeroize`) and pinning (`mlock`) are utilized to limit the exposure of sensitive parameters in RAM.
 
-## 3. Operational Evaluation (DoS & Metadata)
-- **Padding Behavior**: Implementation utilizes noise-prefixed blocks (up to 64KB) to reduce ciphertext length as a side-channel for message content analysis.
-- **Rate Limiting Logic**: Protocol includes internal structural paths for authorization-level rate limiting, designed with constant-time branching properties.
+## 3. Operational Analysis (DoS & Metadata)
+- **Metadata Protection**: The hardened padding logic (up to 64KB) is designed to decouple ciphertext length from plaintext size, mitigating side-channel content analysis.
+- **Rate Limiting**: Structural paths for authentication are engineered for constant-time branching to resist DoS-probing.
 
-## 4. Identity Management Evaluation
-- **Location**: `core/src/lib.rs` (`Config::fortress_mode`)
-- **Policy Behavior**: When configured in Fortress Mode, the system enforces a policy of mandatory Safety Number verification to manage impersonation risk during initial key exchange.
+## 4. Identity Management
+- **Security Policy**: In Fortress Mode, the protocol is designed to enforce mandatory Safety Number verification to manage active impersonation risk.
 
 ## 5. Status Summary
 
-| Property | Evaluation Status |
+| Property | Status |
 |----------|--------|
 | **Release Grade** | Hardened Security-Oriented Research Prototype |
-| **Internal Review** | Technical & Statistical Evaluation Ongoing |
+| **Maturity** | Formal Specification Draft (Phase 3) |
+| **Internal Review** | Statistical & Logic Evaluation Ongoing |
 | **Audit Status** | **Awaiting Formal Independent Cryptographic Review** |
 
 > [!CAUTION]
-> **Important Note**: Sibna v3.0.0 is an architectural implementation following security best-practices. However, no cryptographic system should be considered "proven" or "verified" without undergoing extensive peer-reviewed disclosure and rigorous formal third-party audits.
+> **Important Note**: Sibna v3.0.0 implements a high-security architecture following academic best-practices. However, no protocol should be deployed in high-risk environments without exhaustive peer-reviewed audit and formal third-party validation.
