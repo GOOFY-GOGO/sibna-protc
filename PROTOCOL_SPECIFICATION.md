@@ -1,4 +1,4 @@
-# Sibna Protocol Specification — v3.0.0 "Fortress"
+# Sibna Protocol Specification — v3.0.0 
 
 ---
 
