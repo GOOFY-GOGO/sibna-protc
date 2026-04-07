@@ -81,7 +81,7 @@ The relay server identifies the sender for routing but cannot decrypt message co
 Messages use a hardened padding format with a noise prefix to prevent size inference.
 
 **Format:** `[8 bytes Noise] [2 bytes LE Payload length] [Payload] [Random Padding]`
-Standard block size is 1KB; Quantum mode uses 64KB.
+Standard block size is 1KB; Hardened mode uses 64KB.
 
 ---
 
