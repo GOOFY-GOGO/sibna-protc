@@ -5,7 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
-## [3.0.0] — 2024-04-06 (Ultimate Upgrade)
+## [3.0.0] — 2026-04-06 (Ultimate Upgrade)
 
 ### Security Fixes — CRITICAL
 - **Timing Oracle Fix**: Replaced string comparisons with `subtle::ConstantTimeEq` for challenge authentication.
