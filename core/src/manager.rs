@@ -3,7 +3,7 @@
 //! The `HybridRouter` coordinates between P2P direct transport and
 //! Server-based relay transport. It implements a "P2P-first" policy.
 //!
-//! # Security Fixes Applied (Audit v1.0)
+//! # Security Hardening Applied (v3.0.0 Fortress)
 //!
 //! | ID  | Severity | Description                                              |
 //! |-----|----------|----------------------------------------------------------|

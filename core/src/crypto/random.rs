@@ -23,7 +23,7 @@ impl SecureRandom {
 
         rng.fill_bytes(&mut entropy_pool);
 
-        // Mix in environmental noise (v1.2)
+        // Mix in environmental noise (v3.0.0)
         let pid = std::process::id().to_le_bytes();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -39,7 +39,7 @@ impl SecureRandom {
             return Err(CryptoError::RandomFailed);
         }
 
-        // MEMORY PINNING (Audit v2.0): Pin the entropy pool to RAM to prevent 
+        // MEMORY PINNING (Hardened v3.0.0): Pin the entropy pool to RAM to prevent 
         // it being swapped to disk where it could be recovered by an attacker.
         #[cfg(windows)]
         unsafe {

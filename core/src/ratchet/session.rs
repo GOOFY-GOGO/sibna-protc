@@ -92,9 +92,9 @@ impl DoubleRatchetSession {
         }
 
         // FIX: Single HKDF expand for 64 bytes, split into root_key (32) + chain_key (32)
-        let hkdf = Hkdf::<Sha256>::new(Some(b"SibnaSession_v9"), shared_secret);
+        let hkdf = Hkdf::<Sha256>::new(Some(b"SibnaSession_v3"), shared_secret);
         let mut okm = [0u8; 64];
-        hkdf.expand(b"SibnaRootAndChainKey_v9", &mut okm)
+        hkdf.expand(b"SibnaRootAndChainKey_v3", &mut okm)
             .map_err(|_| ProtocolError::KeyDerivationFailed)?;
 
         let mut root_key = [0u8; 32];

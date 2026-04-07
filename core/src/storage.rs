@@ -27,7 +27,7 @@ pub struct StoragePayload {
     pub last_save: u64,
 }
 
-/// Storage Manifest - sidecar file for rollback protection (v1.2)
+/// Storage Manifest - sidecar file for rollback protection (v3.0.0)
 #[derive(Serialize, Deserialize)]
 pub struct StorageManifest {
     pub version: u32,
@@ -106,7 +106,7 @@ impl SecureStorage {
             .map_err(|_| ProtocolError::StorageError)?;
         drop(file);
 
-        // 4. Save Manifest (v1.2)
+        // 4. Save Manifest (v3.0.0)
         let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
         sha2::Digest::update(&mut hasher, &encrypted);
         let blob_hash: [u8; 32] = sha2::Digest::finalize(hasher).into();
@@ -139,7 +139,7 @@ impl SecureStorage {
         use std::io::Read;
         use crate::crypto::CryptoHandler;
 
-        // 1. Read Manifest if it exists (v1.2)
+        // 1. Read Manifest if it exists (v3.0.0)
         let manifest_path = path.with_extension("manifest");
         let manifest: Option<StorageManifest> = if manifest_path.exists() {
             let bytes = std::fs::read(&manifest_path)
@@ -172,7 +172,7 @@ impl SecureStorage {
         let handler = CryptoHandler::new(encryption_key)
             .map_err(|_| ProtocolError::InternalError)?;
         
-        // 3. Verify Manifest Hash (Splicing Protection) - v1.2
+        // 3. Verify Manifest Hash (Splicing Protection) - v3.0.0
         if let Some(ref m) = manifest {
             let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
             sha2::Digest::update(&mut hasher, &encrypted);
@@ -189,7 +189,7 @@ impl SecureStorage {
         let payload: StoragePayload = bincode::deserialize(&plaintext)
             .map_err(|_| ProtocolError::DeserializationError)?;
 
-        // 4. Verify Sequence Number (Rollback Protection) - v1.2
+        // 4. Verify Sequence Number (Rollback Protection) - v3.0.0
         if let Some(ref m) = manifest {
             if payload.sequence_number < m.sequence_number {
                 return Err(ProtocolError::StorageError); // Rollback detected

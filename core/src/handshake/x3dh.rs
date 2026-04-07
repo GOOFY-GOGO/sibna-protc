@@ -128,7 +128,7 @@ pub fn x3dh_initiator_v3(
         dh_results.push(dh4.to_bytes());
     }
 
-    // Derive transcript hash (v2.0 Fortress)
+    // Derive transcript hash (v3.0.0 Fortress)
     // IMPORTANT: Only hash PUBLIC key material to ensure consistency and prevent leakage.
     let mut hasher = blake3::Hasher::new();
     hasher.update(PublicKey::from(our_identity).as_bytes());
@@ -142,7 +142,7 @@ pub fn x3dh_initiator_v3(
     hasher.update(peer_device_id);
     let mut transcript_hash: [u8; 32] = hasher.finalize().into();
 
-    // BIND EXTERNAL TRANSCRIPT (Audit v2.0):
+    // BIND EXTERNAL TRANSCRIPT (Hardened v3.0.0):
     // Combine the X3DH transcript with the P2P handshake transcript.
     for (i, byte) in transcript_hash.iter_mut().enumerate() {
         *byte ^= transcript_hash_ext[i];
@@ -253,7 +253,7 @@ pub fn x3dh_responder_v3(
         dh_results.push(dh4.to_bytes());
     }
 
-    // Derive transcript hash (v2.0 Fortress)
+    // Derive transcript hash (v3.0.0 Fortress)
     // IMPORTANT: Only hash PUBLIC key material to ensure consistency and prevent leakage.
     let mut hasher = blake3::Hasher::new();
     hasher.update(peer_identity.as_bytes());
@@ -267,7 +267,7 @@ pub fn x3dh_responder_v3(
     hasher.update(peer_device_id);
     let mut transcript_hash: [u8; 32] = hasher.finalize().into();
 
-    // BIND EXTERNAL TRANSCRIPT (Audit v2.0):
+    // BIND EXTERNAL TRANSCRIPT (Hardened v3.0.0):
     // Combine the X3DH transcript with the P2P handshake transcript.
     for (i, byte) in transcript_hash.iter_mut().enumerate() {
         *byte ^= transcript_hash_ext[i];
@@ -350,17 +350,17 @@ impl X3dhSessionKeys {
         use crate::crypto::kdf::HkdfKdf;
 
         let infos: &[&[u8]] = &[
-            // NOTE: _v9 suffix is part of the on-wire format.
-            // Changing these breaks interoperability — bump to v10 if you change the format.
-            b"SibnaSendingKey_v9",
-            b"SibnaReceivingKey_v9",
-            b"SibnaAuthKey_v9",
-            b"SibnaExtraKey1_v9",
-            b"SibnaExtraKey2_v9",
+            // NOTE: _v3 suffix is part of the on-wire format.
+            // Changing these breaks interoperability — bump to v4 if you change the format.
+            b"SibnaSendingKey_v3",
+            b"SibnaReceivingKey_v3",
+            b"SibnaAuthKey_v3",
+            b"SibnaExtraKey1_v3",
+            b"SibnaExtraKey2_v3",
         ];
 
         // FIX: Use a proper domain-separation salt instead of empty slice
-        let keys = HkdfKdf::derive_multiple(shared_secret, b"SibnaX3DH_SessionKeys_v10", infos)?;
+        let keys = HkdfKdf::derive_multiple(shared_secret, b"SibnaX3DH_SessionKeys_v3", infos)?;
 
         if keys.len() < 3 {
             return Err(ProtocolError::KeyDerivationFailed);

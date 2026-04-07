@@ -7,32 +7,31 @@ A high-security Rust implementation of the X3DH and Double Ratchet protocol — 
 ---
 
 > [!IMPORTANT]
-> **Production-Ready Status (Pre-Audit)**: Sibna v3.0.0 is a hardened cryptographic suite validated via statistical benchmarks ($<10ns$ variance) and symbolic execution (Kani) proofs. While it still awaits a formal 3rd-party independent audit (Roadmap: Q3 2026), it meets high-assurance baseline requirements for commercial-grade deployment.
+> **Status: Hardened Security-Oriented Implementation (Pre-Audit)**.
+> Sibna v3.0.0 is a security-hardened cryptographic suite validated via statistical timing analysis and internal architectural audit. While it awaits a formal 3rd-party independent audit (Roadmap: Q3 2026), it is designed to meet high-assurance requirements for sensitive deployments.
 
 ---
 
-## Currently Implemented Features
+## Core Features
 
-| Feature | Status | Reference |
-|--------|--------|--------|
-| X3DH v3 + Transcript Binding (BLAKE3) | ✅ | `crypto/kdf.rs`, `p2p/handshake.rs` |
-| Stealth Handshake (Identity Hiding in P2P) | ✅ | `p2p/handshake.rs:57` |
-| Double Ratchet (Forward Secrecy) | ✅ | `ratchet/` |
-| Hybrid PQC: X25519 + ML-KEM-768 | ✅ Default | `handshake/x3dh.rs` |
-| Delivery ACKs (Zero Message Loss) | ✅ | `ws.rs` |
-| Last Resort PreKeys | ✅ | `main.rs`, `client.py` |
-| WebRTC Session Routing | ✅ | `ws.rs` |
-| Argon2id for stored key derivation | ✅ | `lib.rs:250` — requires `feature = "argon2"` |
-| Memory Pinning (`mlock`/`VirtualLock`) | ✅ | `crypto/random.rs` |
-| Multi-Device `device_id` in KDF | ✅ | `lib.rs:144` |
-| Sealed Sender (Server cannot see sender) | ✅ | `metadata.rs` |
-| Message Size Padding (256B→16KB) | ✅ | `crypto/padding.rs` |
-| Cover Traffic (Exponential Distribution) | ✅ | `manager.rs` |
-| P2P mDNS Discovery (with cancellation) | ✅ | `manager.rs`, `p2p/discovery.rs` |
-| SOCKS5 / Tor relay | ✅ | `transport/relay.rs` |
-| Multi-layered Rate Limiting | ✅ | `rate_limit.rs` |
-| FFI (C/C++/Flutter/Python) | ✅ | `ffi/mod.rs` |
-| WASM (JavaScript/TypeScript) | ✅ | `wasm.rs` |
+### 🔐 Core Cryptography
+- **X3DH v3 + Transcript Binding**: BLAKE3-based binding to prevent UKS attacks.
+- **Double Ratchet**: Forward Secrecy and Post-Compromise Security.
+- **Hybrid PQC (Post-Quantum)**: Standard X25519 combined with ML-KEM-768 (FIPS 203).
+- **Memory Security**: `Zeroize` on drop and memory pinning (`mlock`) for sensitive keys.
+
+### 🌐 Transport & Networking
+- **mDNS / Stealth Handshake**: Identity-hiding discovery in P2P environments.
+- **Relay Support**: Native SOCKS5 and Tor transport integration.
+- **WebRTC Signaling**: Routing support for high-bandwidth media sessions.
+- **Delivery ACKs**: Reliable delivery with zero message loss.
+
+### 🛡️ Privacy & Metadata Resistance
+- **Sealed Sender (Blinded Relay)**: Infrastructure designed to minimize sender metadata at the relay layer.
+- **Metadata Obfuscation**: Hardened padding (1KB default, up to 64KB) with random noise prefixes.
+- **Cover Traffic**: Exponentially distributed dummy packets to mitigate traffic analysis.
+
+---
 
 ## Quick Start
 
@@ -51,27 +50,23 @@ let identity = ctx.generate_identity()?;
 // Send a message (automatically routes via P2P or Relay)
 let mut router = HybridRouter::new(ctx);
 router.send_message(&recipient_id, b"Hello").await?;
-
-// Clean shutdown
-router.stop_discovery();
 ```
 
-## Security Limitations — Please Read
+---
 
-> [!CAUTION]
+## Security Invariants
 
 | Property | Safeguard | Status |
 |----------|-----------|--------|
 | **Identity (MITM)** | `Config::fortress_mode()` enforces Safety Number verification. | ✅ Enforced |
-| **Traffic Analysis** | **Quantum Padding** (64KB blocks) + Poisson Cover Traffic. | ✅ Hardened |
+| **Traffic Analysis** | **Fixed-size padding** (up to 64KB) + Poisson Cover Traffic. | ✅ Hardened |
 | **Anonymity** | Native SOCKS5/Tor transport support integrated. | ✅ Integrated |
-| **Transport Security** | Built-in TLS and Noise transport wrappers. | ✅ Provided |
-| **Side Channels** | Statistical Timing Verification ($<0.1ns$ variance). | ✅ Verified |
-| **Rate Limiter** | Constant-Time structural path implementation. | ✅ Fixed |
+| **Side Channels** | Statistically stable timing profile under controlled benchmarks. | ✅ Verified |
+| **Rate Limiting** | Constant-time authentication path implementation. | ✅ Hardened |
 
 ## Documentation
 
-- [SECURITY.md](SECURITY.md) — Threat model and limitations
+- [SECURITY.md](SECURITY.md) — Threat model and formal limitations
 - [PROTOCOL_SPECIFICATION.md](PROTOCOL_SPECIFICATION.md) — Technical Specification
 - [CHANGELOG.md](CHANGELOG.md) — Release History
 

@@ -221,7 +221,7 @@ impl X3dhKdf {
         concatenated.extend_from_slice(pq_shared_secret);
 
         // Use HKDF with transcript hash as SALT for domain separation
-        // Note the version bump to v10 for PQC-capable core
+        // Note the version bump to v3 for PQC-capable core
         let hkdf = Hkdf::<Sha256>::new(Some(transcript_hash), &concatenated);
         let mut okm = [0u8; KEY_LENGTH];
 

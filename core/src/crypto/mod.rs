@@ -413,7 +413,7 @@ pub fn validate_key_security(key: &[u8]) -> CryptoResult<()> {
     Ok(())
 }
 
-/// Validate an X25519 public key to prevent Small Subgroup Attacks (v1.2)
+/// Validate an X25519 public key to prevent Small Subgroup Attacks (v3.0.0)
 ///
 /// Rejects the 8 known low-order points for Curve25519.
 pub fn validate_public_key(pub_key: &[u8; 32]) -> CryptoResult<()> {

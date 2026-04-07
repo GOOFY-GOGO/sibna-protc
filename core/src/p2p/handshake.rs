@@ -116,7 +116,7 @@ pub(crate) enum P2pMsg {
 use crate::crypto::{CryptoHandler, SimpleKdf};
 
 /// Bumped on any breaking wire-format change.
-const P2P_PROTOCOL_VERSION: u8 = 2; // v2.0 Fortress
+const P2P_PROTOCOL_VERSION: u8 = 3; // v3.0.0 Fortress
 
 // ── Serialisation & Handshake Crypto ───────────────────────────────────────
 
@@ -137,7 +137,7 @@ fn derive_handshake_key(
     peer_ephemeral_pub: &PublicKey,
 ) -> P2pResult<CryptoHandler> {
     let shared = our_ephemeral.diffie_hellman(peer_ephemeral_pub);
-    let key = SimpleKdf::derive_sha256(shared.as_bytes(), b"SibnaHandshake_v2.0")
+    let key = SimpleKdf::derive_sha256(shared.as_bytes(), b"SibnaHandshake_v3")
         .map_err(|e| P2pError::Crypto(e.to_string()))?;
     
     CryptoHandler::new(key.as_ref())
@@ -198,7 +198,7 @@ pub async fn initiator_handshake(
         bundle.validate()
             .map_err(|e| P2pError::Handshake(format!("bundle validation: {:?}", e)))?;
 
-        // ── Transcript Binding (v2.0) ──────────────────────────────────
+        // ── Transcript Binding (v3.0.0) ──────────────────────────────────
         let mut hasher = blake3::Hasher::new();
         hasher.update(alice_ephemeral_pub.as_bytes());
         hasher.update(bob_ephemeral_pub.as_bytes());
@@ -220,7 +220,7 @@ pub async fn initiator_handshake(
         let peer_opk_pub    = bundle.onetime_prekey.map(PublicKey::from);
 
         #[cfg(feature = "pqc")]
-        let mut x3dh_result = crate::handshake::x3dh::x3dh_initiator_v10(
+        let mut x3dh_result = crate::handshake::x3dh::x3dh_initiator_v3(
             our_identity_x,
             &x3dh_ephemeral,
             &peer_identity_x,
@@ -282,7 +282,7 @@ pub async fn initiator_handshake(
         let remote_dh = PublicKey::from(bundle.signed_prekey);
         let mut shared_secret = x3dh_result.shared_secret;
         
-        // V3.1.0: Deterministic role check to prevent confusion
+        // v3.0.0: Deterministic role check to prevent confusion
         let role = HandshakeRole::Initiator; 
 
         let session = DoubleRatchetSession::from_shared_secret(
@@ -377,7 +377,7 @@ pub async fn responder_handshake(
         let stealth_envelope: StealthEnvelope = bincode::deserialize(&envelope_payload)
             .map_err(|e| P2pError::Handshake(format!("malformed stealth envelope: {}", e)))?;
 
-        // ── Transcript Binding (v2.0) ──────────────────────────────────
+        // ── Transcript Binding (v3.0.0) ──────────────────────────────────
         let mut hasher = blake3::Hasher::new();
         hasher.update(alice_ephemeral_pub.as_bytes());
         hasher.update(bob_ephemeral_pub.as_bytes());
@@ -395,7 +395,7 @@ pub async fn responder_handshake(
         let initiator_eph_pub    = PublicKey::from(stealth_envelope.ephemeral_pub);
 
         #[cfg(feature = "pqc")]
-        let x3dh_result = crate::handshake::x3dh::x3dh_responder_v10(
+        let x3dh_result = crate::handshake::x3dh::x3dh_responder_v3(
             our_identity_x,
             &spk_secret,
             opk_secret.as_ref(),

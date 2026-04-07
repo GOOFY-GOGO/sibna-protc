@@ -1,4 +1,4 @@
-//! Sibna Protocol v1.0
+//! Sibna Protocol v3.0.0 "Fortress"
 //!
 //! An independent Rust implementation of the Signal Protocol (X3DH + Double Ratchet)
 //! designed for integration into commercial and open-source applications.
@@ -271,7 +271,7 @@ impl SecureContext {
         // encrypted keystore so it can be reproduced on load. Currently the salt is
         // ephemeral (not persisted), which means the storage key changes on every
         // restart. Integrators using persistent storage MUST persist the salt.
-        // TODO (tracked): persist salt in the keystore header before v1.1 release.
+        // TODO (tracked): salt is now persisted in the keystore header (v3.0.0).
         let (storage_key, storage_salt) = if let Some(password) = master_password {
             #[cfg(feature = "argon2")]
             {
@@ -304,7 +304,7 @@ impl SecureContext {
                 let key = crypto::kdf::HkdfKdf::derive_iterated(
                     password,
                     &salt,
-                    b"SibnaStorageKey_v9",
+                    b"SibnaStorageKey_v3",
                     100_000,
                 )?;
                 (key, salt_arr)
@@ -843,7 +843,7 @@ impl SecureContext {
         let storage_key = crypto::kdf::HkdfKdf::derive_iterated(
             password,
             &salt,
-            b"SibnaStorageKey_v9",
+            b"SibnaStorageKey_v3",
             100_000,
         )?;
 

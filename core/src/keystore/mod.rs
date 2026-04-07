@@ -705,7 +705,7 @@ impl KeyStore {
         // Encrypt with ChaCha20-Poly1305
         let handler = CryptoHandler::new(encryption_key.as_ref())
             .map_err(|_| ProtocolError::InternalError)?;
-        handler.encrypt(&plaintext, b"SibnaKeyStore_v10")
+        handler.encrypt(&plaintext, b"SibnaKeyStore_v3")
             .map_err(|_| ProtocolError::StorageError)
     }
 
@@ -717,7 +717,7 @@ impl KeyStore {
 
         let handler = CryptoHandler::new(encryption_key.as_ref())
             .map_err(|_| ProtocolError::InternalError)?;
-        let plaintext = handler.decrypt(data, b"SibnaKeyStore_v10")
+        let plaintext = handler.decrypt(data, b"SibnaKeyStore_v3")
             .map_err(|_| ProtocolError::StorageError)?;
 
         let mut store: KeyStore = bincode::deserialize(&plaintext)
@@ -1106,7 +1106,7 @@ mod tests {
         };
 
         let tmp_dir = std::env::temp_dir();
-        let path = tmp_dir.join("sibna_keystore_test_v10.bin");
+        let path = tmp_dir.join("sibna_keystore_test_v3.bin");
 
         keystore.save_to_disk(&path, &encryption_key).unwrap();
         let loaded = KeyStore::load_from_disk(&path, &encryption_key).unwrap();

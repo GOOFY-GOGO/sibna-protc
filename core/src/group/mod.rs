@@ -1,3 +1,4 @@
+//! Group Messaging (MLS-style) — Sibna Protocol v3.0.0
 //! Group Messaging - Sender Keys Implementation
 //!
 //! Implements the Sender Keys protocol for efficient group encryption.
@@ -95,12 +96,12 @@ impl SenderKey {
         
         // Derive message key
         let mut message_key = [0u8; 32];
-        hkdf.expand(b"SibnaGroupMessageKey_v9", &mut message_key)
+        hkdf.expand(b"SibnaGroupMessageKey_v3", &mut message_key)
             .map_err(|_| ProtocolError::KeyDerivationFailed)?;
         
         // Advance chain key
         let mut next_chain = [0u8; 32];
-        hkdf.expand(b"SibnaGroupChainKey_v9", &mut next_chain)
+        hkdf.expand(b"SibnaGroupChainKey_v3", &mut next_chain)
             .map_err(|_| ProtocolError::KeyDerivationFailed)?;
         
         // Securely update chain key
