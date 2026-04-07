@@ -50,4 +50,4 @@ Sibna v3.0.0 defines a formal threat model covering both passive network monitor
 
 ## Vulnerability Disclosure
 
-📧 Contact: `security@sibna.dev`
+📧 Contact: `sibnaa@zohomail.com`
