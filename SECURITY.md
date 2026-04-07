@@ -51,4 +51,4 @@ Sibna v3.0.0 defines a formal threat model covering both passive network monitor
 
 **Do not open public issues for security vulnerabilities.**  
 Please report security concerns privately to:  
-📧 `security@sibna.dev`
+📧 `sibnaa@zohomail.com`
