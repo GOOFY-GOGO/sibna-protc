@@ -121,13 +121,13 @@ const P2P_PROTOCOL_VERSION: u8 = 3; // v3.0.0 Fortress
 // ── Serialisation & Handshake Crypto ───────────────────────────────────────
 
 pub(crate) fn encode_msg(msg: &P2pMsg) -> P2pResult<Bytes> {
-    bincode::serialize(msg)
+    bincode::encode_to_vec(msg, bincode::config::legacy())
         .map(Bytes::from)
         .map_err(|e| P2pError::Framing(e.to_string()))
 }
 
 pub(crate) fn decode_msg(bytes: &[u8]) -> P2pResult<P2pMsg> {
-    bincode::deserialize(bytes)
+    bincode::decode_from_slice(bytes, bincode::config::legacy()).map(|(v,_)|v)
         .map_err(|e| P2pError::InvalidMessage(e.to_string()))
 }
 
@@ -190,7 +190,7 @@ pub async fn initiator_handshake(
 
         let bundle_payload = handler.decrypt(&encrypted_bundle, b"handshake_bundle")
             .map_err(|_| P2pError::Handshake("failed to decrypt bundle".into()))?;
-        let stealth_bundle: StealthBundle = bincode::deserialize(&bundle_payload)
+        let stealth_bundle: StealthBundle = bincode::decode_from_slice(&bundle_payload, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|e| P2pError::Handshake(format!("malformed stealth bundle: {}", e)))?;
 
         let bundle = PreKeyBundle::from_bytes(&stealth_bundle.bundle_bytes)
@@ -255,7 +255,7 @@ pub async fn initiator_handshake(
             #[cfg(feature = "pqc")]
             pq_ciphertext: x3dh_result.pq_ciphertext.take(),
         };
-        let envelope_payload = bincode::serialize(&stealth_envelope)
+        let envelope_payload = bincode::encode_to_vec(&stealth_envelope, bincode::config::legacy())
             .map_err(|e| P2pError::Framing(e.to_string()))?;
         let encrypted_envelope = handler.encrypt(&envelope_payload, b"handshake_envelope")
             .map_err(|_| P2pError::Crypto("failed to encrypt envelope".into()))?;
@@ -351,7 +351,7 @@ pub async fn responder_handshake(
             responder_device_id: our_device_id,
             bundle_bytes: bundle.to_bytes(),
         };
-        let bundle_payload = bincode::serialize(&stealth_bundle)
+        let bundle_payload = bincode::encode_to_vec(&stealth_bundle, bincode::config::legacy())
             .map_err(|e| P2pError::Framing(e.to_string()))?;
         let encrypted_bundle = handler.encrypt(&bundle_payload, b"handshake_bundle")
             .map_err(|_| P2pError::Crypto("failed to encrypt bundle".into()))?;
@@ -374,7 +374,7 @@ pub async fn responder_handshake(
 
         let envelope_payload = handler.decrypt(&encrypted_envelope, b"handshake_envelope")
             .map_err(|_| P2pError::Handshake("failed to decrypt envelope".into()))?;
-        let stealth_envelope: StealthEnvelope = bincode::deserialize(&envelope_payload)
+        let stealth_envelope: StealthEnvelope = bincode::decode_from_slice(&envelope_payload, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|e| P2pError::Handshake(format!("malformed stealth envelope: {}", e)))?;
 
         // ── Transcript Binding (v3.0.0) ──────────────────────────────────

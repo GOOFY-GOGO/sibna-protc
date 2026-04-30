@@ -64,7 +64,7 @@ impl SecureStorage {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression in storage: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
 
         let payload = StoragePayload {
@@ -77,7 +77,7 @@ impl SecureStorage {
         };
 
         // Serialize payload
-        let plaintext = bincode::serialize(&payload)
+        let plaintext = bincode::encode_to_vec(&payload, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)?;
 
         // Encrypt payload
@@ -116,7 +116,7 @@ impl SecureStorage {
             sequence_number: payload.sequence_number,
             blob_hash,
         };
-        let manifest_bytes = bincode::serialize(&manifest)
+        let manifest_bytes = bincode::encode_to_vec(&manifest, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)?;
         
         let manifest_path = path.with_extension("manifest");
@@ -144,7 +144,7 @@ impl SecureStorage {
         let manifest: Option<StorageManifest> = if manifest_path.exists() {
             let bytes = std::fs::read(&manifest_path)
                 .map_err(|_| ProtocolError::StorageError)?;
-            Some(bincode::deserialize(&bytes).map_err(|_| ProtocolError::DeserializationError)?)
+            Some(bincode::decode_from_slice(&bytes, bincode::config::legacy()).map(|(v,_)|v).map_err(|_| ProtocolError::DeserializationError)?)
         } else {
             None
         };
@@ -186,7 +186,7 @@ impl SecureStorage {
         let plaintext = handler.decrypt(&encrypted, b"SibnaUnifiedStore_v1")
             .map_err(|_| ProtocolError::StorageError)?;
 
-        let payload: StoragePayload = bincode::deserialize(&plaintext)
+        let payload: StoragePayload = bincode::decode_from_slice(&plaintext, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|_| ProtocolError::DeserializationError)?;
 
         // 4. Verify Sequence Number (Rollback Protection) - v3.0.0

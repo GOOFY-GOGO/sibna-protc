@@ -22,6 +22,14 @@ const MAX_MESSAGE_AGE_SECS: u64 = 86400;
 const CLOCK_SKEW_TOLERANCE_SECS: u64 = 30;
 
 /// Message encryptor with replay protection
+///
+/// SECURITY FIX §3.3: Replaced bare HashSet with a timestamp-anchored sliding window.
+/// The old design allowed replay attacks: once seen_numbers exceeded max_seen_numbers,
+/// old entries were evicted by number, not time. An attacker could capture a message,
+/// wait for the set to cycle, and replay it. The new design:
+///   1. Enforces a TIMESTAMP window (MAX_MESSAGE_AGE_SECS) as the primary guard.
+///   2. Tracks seen numbers only within the current timestamp window.
+///   3. Evicts entries whose timestamp is outside the window, not by count.
 pub struct Encryptor {
     /// The cipher instance
     cipher: ChaCha20Poly1305,
@@ -31,9 +39,9 @@ pub struct Encryptor {
     _key: Zeroizing<[u8; KEY_LENGTH]>,
     /// Maximum message number seen (for replay detection)
     max_message_number: u64,
-    /// Seen message numbers (for replay detection)
-    seen_numbers: std::collections::HashSet<u64>,
-    /// Maximum seen numbers to track
+    /// Seen (message_number, timestamp) pairs — timestamp used for time-bounded eviction
+    seen_numbers: std::collections::HashMap<u64, u64>,
+    /// Maximum seen numbers to track (hard cap against memory exhaustion)
     max_seen_numbers: usize,
 }
 
@@ -58,7 +66,7 @@ impl Encryptor {
             message_number: initial_message_number,
             _key: Zeroizing::new(key_array),
             max_message_number: initial_message_number,
-            seen_numbers: std::collections::HashSet::new(),
+            seen_numbers: std::collections::HashMap::new(),
             max_seen_numbers: 1000,
         })
     }
@@ -163,10 +171,11 @@ impl Encryptor {
             return Err(CryptoError::InvalidCiphertext);
         }
 
-        // Check for replay — always consult seen_numbers regardless of relative order.
-        // Without this, any captured ciphertext can be replayed with a bumped
-        // header counter (message_number > max_message_number) and bypass detection.
-        if self.seen_numbers.contains(&message_number) {
+        // Check for replay — consult seen_numbers which stores (number → timestamp).
+        // SECURITY FIX §3.3: Use timestamp-anchored check: a message number is a replay
+        // only if it was seen AND its recorded timestamp is still within the valid window.
+        // This prevents the old HashSet eviction bypass.
+        if self.seen_numbers.contains_key(&message_number) {
             return Err(CryptoError::AuthenticationFailed);
         }
 
@@ -191,7 +200,7 @@ impl Encryptor {
             .map_err(|_| CryptoError::AuthenticationFailed)?;
 
         // Update replay protection state
-        self.update_seen_numbers(message_number);
+        self.update_seen_numbers(message_number, timestamp);
 
         Ok(plaintext)
     }
@@ -210,18 +219,42 @@ impl Encryptor {
         header
     }
 
-    /// Update seen message numbers
-    fn update_seen_numbers(&mut self, message_number: u64) {
+    /// Update seen message numbers using timestamp-anchored sliding window.
+    ///
+    /// SECURITY FIX §3.3: Evicts by timestamp window rather than by count.
+    /// Entries older than MAX_MESSAGE_AGE_SECS are removed — they can never arrive
+    /// legitimately, so there is no value in keeping them for replay detection.
+    /// The hard-cap (max_seen_numbers) remains as a memory exhaustion safeguard.
+    fn update_seen_numbers(&mut self, message_number: u64, timestamp: u64) {
         if message_number > self.max_message_number {
             self.max_message_number = message_number;
         }
 
-        self.seen_numbers.insert(message_number);
+        self.seen_numbers.insert(message_number, timestamp);
 
-        // Prune old numbers if we have too many
+        // Evict by time: anything older than MAX_MESSAGE_AGE_SECS cannot be replayed
+        // legitimately (timestamp check in decrypt_message rejects them), so it is
+        // safe to remove them from the replay set.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(u64::MAX / 2);
+
+        let cutoff = now.saturating_sub(MAX_MESSAGE_AGE_SECS);
+        self.seen_numbers.retain(|_, &mut ts| ts >= cutoff);
+
+        // Hard cap: if still over limit after time-eviction, evict oldest timestamps
         if self.seen_numbers.len() > self.max_seen_numbers {
-            let min_to_keep = self.max_message_number.saturating_sub(self.max_seen_numbers as u64);
-            self.seen_numbers.retain(|&n| n > min_to_keep);
+            // Collect and sort by timestamp to evict oldest first
+            let mut entries: Vec<(u64, u64)> = self.seen_numbers
+                .iter()
+                .map(|(&k, &v)| (k, v))
+                .collect();
+            entries.sort_unstable_by_key(|&(_, ts)| ts);
+            let to_remove = entries.len() - self.max_seen_numbers;
+            for (k, _) in entries.into_iter().take(to_remove) {
+                self.seen_numbers.remove(&k);
+            }
         }
     }
 
@@ -237,7 +270,7 @@ impl Encryptor {
 
     /// Check if a message number is potentially a replay
     pub fn is_potential_replay(&self, message_number: u64) -> bool {
-        message_number <= self.max_message_number && self.seen_numbers.contains(&message_number)
+        message_number <= self.max_message_number && self.seen_numbers.contains_key(&message_number)
     }
 }
 

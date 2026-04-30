@@ -388,7 +388,7 @@ impl DoubleRatchetSession {
     pub fn age(&self) -> std::time::Duration { 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression in ratchet session: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
         std::time::Duration::from_secs(now.saturating_sub(self.created_at_ts))
     }
@@ -401,13 +401,13 @@ impl DoubleRatchetSession {
     /// Used for persistent storage of ratchet state.
     pub fn serialize_state(&self) -> ProtocolResult<Vec<u8>> {
         let state = self.state.read();
-        bincode::serialize(&*state)
+        bincode::encode_to_vec(&*state, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)
     }
 
     /// Restore session state from serialized bytes.
     pub fn deserialize_state(&self, data: &[u8]) -> ProtocolResult<()> {
-        let loaded: DoubleRatchetState = bincode::deserialize(data)
+        let loaded: DoubleRatchetState = bincode::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|_| ProtocolError::DeserializationError)?;
         
         {

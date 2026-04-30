@@ -286,6 +286,10 @@ pub enum ProtocolError {
     /// Nonce reservation required for safety
     #[error("Nonce reservation pool exhausted - persistent update required")]
     NonceReservationRequired,
+
+    /// Message number overflow — key rotation required
+    #[error("Message number overflow: sender key exhausted after 2^32 messages, rotate key")]
+    MessageNumberOverflow,
 }
 
 /// Result type for protocol operations

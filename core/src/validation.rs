@@ -665,4 +665,29 @@ mod tests {
         // Same keys (invalid)
         assert!(validate_prekey_bundle(&ik, &ik, &sig, None).is_err());
     }
+
+    /// SECURITY FIX §4.3: Regression test — MAX_AD_LEN must match the crypto layer limit (256).
+    /// If this test fails, validation.rs and crypto/mod.rs are out of sync and messages
+    /// with >256 bytes of associated data will be silently rejected at the crypto layer.
+    #[test]
+    fn test_max_ad_len_matches_crypto_layer() {
+        use crate::crypto::MAX_INFO_LENGTH;
+        assert_eq!(
+            limits::MAX_AD_LEN, MAX_INFO_LENGTH,
+            "MAX_AD_LEN ({}) must equal crypto::MAX_INFO_LENGTH ({}) — \
+             mismatches cause silent AD rejection at the cipher layer",
+            limits::MAX_AD_LEN, MAX_INFO_LENGTH
+        );
+    }
+
+    #[test]
+    fn test_associated_data_at_limit() {
+        // Exactly 256 bytes should pass
+        let ad_256 = vec![0xaau8; limits::MAX_AD_LEN];
+        assert!(validate_associated_data(&ad_256).is_ok());
+
+        // 257 bytes must be rejected
+        let ad_257 = vec![0xaau8; limits::MAX_AD_LEN + 1];
+        assert!(validate_associated_data(&ad_257).is_err());
+    }
 }

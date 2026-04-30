@@ -5,6 +5,9 @@ use super::{CryptoError, CryptoResult};
 use rand_core::{CryptoRng, RngCore};
 use rand::rngs::OsRng;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+// SECURITY FIX §4.5: HKDF-based entropy combining
+use hkdf::Hkdf;
+use sha2::Sha256;
 
 const ENTROPY_POOL_SIZE: usize = 64;
 
@@ -27,7 +30,7 @@ impl SecureRandom {
         let pid = std::process::id().to_le_bytes();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression in SecureRandom: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_nanos()
             .to_le_bytes();
         
@@ -66,16 +69,48 @@ impl SecureRandom {
             self.reseed();
         }
 
-        self.rng.fill_bytes(buf);
+        // SECURITY FIX §4.5: Replace naive XOR mixing with HKDF-Extract + HKDF-Expand.
+        //
+        // Old design: output[i] = OsRng[i] XOR pool[i % 64]
+        //   Problem: XOR with a fixed-length pool provides no entropy amplification.
+        //   If the pool is known (e.g. leaked via memory), the XOR subtracts the pool's
+        //   entropy from the output instead of adding to it.
+        //
+        // New design: Derive output via HKDF-Extract(salt=pool, ikm=OsRng_bytes),
+        //   then HKDF-Expand into the requested length.
+        //   This is a standard entropy-combining construction (RFC 5869 §3.3):
+        //   the output is at least as strong as the stronger of the two inputs.
 
-        for (i, byte) in buf.iter_mut().enumerate() {
-            *byte ^= self.entropy_pool[i % ENTROPY_POOL_SIZE];
+        // Draw fresh random bytes from OsRng
+        let mut os_bytes = vec![0u8; buf.len()];
+        self.rng.fill_bytes(&mut os_bytes);
+
+        // HKDF-Extract: pool as salt, OsRng output as IKM
+        let hk = Hkdf::<Sha256>::new(Some(&self.entropy_pool), &os_bytes);
+
+        // HKDF-Expand into output buffer
+        // If buf.len() > 255 * 32 bytes (~8160 bytes), split into chunks.
+        // In practice, Sibna never requests >64 bytes from SecureRandom at once.
+        if hk.expand(b"SibnaSecureRandom_v3", buf).is_err() {
+            // expand() only fails if output length > 255 * HashLen (8160 bytes for SHA-256).
+            // Fall back to chunked expand for very large requests.
+            const CHUNK: usize = 8000;
+            let mut offset = 0;
+            while offset < buf.len() {
+                let end = (offset + CHUNK).min(buf.len());
+                let info = format!("SibnaSecureRandom_v3_chunk_{}", offset);
+                let hk2 = Hkdf::<Sha256>::new(Some(&self.entropy_pool), &os_bytes);
+                let _ = hk2.expand(info.as_bytes(), &mut buf[offset..end]);
+                offset = end;
+            }
         }
 
         self.update_entropy_pool(buf);
 
         self.bytes_generated =
             self.bytes_generated.saturating_add(buf.len() as u64);
+    }
+
     }
 
     pub fn next_u64(&mut self) -> u64 {

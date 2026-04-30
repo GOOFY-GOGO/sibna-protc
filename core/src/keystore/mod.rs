@@ -42,7 +42,14 @@ impl IdentityKeyPair {
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // SECURITY FIX §2.2: clock regression must not silently produce timestamp=0,
+                // which bypasses replay protection. Log and use a safe sentinel value.
+                tracing::error!("SystemTime before UNIX_EPOCH (clock regression?): {:?}", e);
+                // Use u64::MAX as sentinel — treated as "very far in the future",
+                // which will be rejected by timestamp validation rather than accepted.
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         Self {
@@ -97,7 +104,14 @@ impl IdentityKeyPair {
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // SECURITY FIX §2.2: clock regression must not silently produce timestamp=0,
+                // which bypasses replay protection. Log and use a safe sentinel value.
+                tracing::error!("SystemTime before UNIX_EPOCH (clock regression?): {:?}", e);
+                // Use u64::MAX as sentinel — treated as "very far in the future",
+                // which will be rejected by timestamp validation rather than accepted.
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         Ok(Self {
@@ -131,10 +145,14 @@ impl IdentityKeyPair {
 
         let sig = Signature::from_bytes(signature);
 
-        match verifying_key.verify(data, &sig) {
-            Ok(()) => Ok(true),
-            Err(_) => Ok(false),
-        }
+        // SECURITY FIX §4.4: Return Err on signature failure rather than Ok(false).
+        // Ok(false) is a "soft" failure that callers can silently ignore (missing
+        // match arm, ? operator skipping, etc.). Err forces explicit handling.
+        // Callers that previously checked `if !keypair.verify(...)` should now use:
+        //   keypair.verify(...)?;  // propagates on failure
+        verifying_key.verify(data, &sig)
+            .map(|_| true)
+            .map_err(|_| ProtocolError::InvalidSignature)
     }
 
     /// Get key fingerprint
@@ -238,7 +256,14 @@ impl SignedPreKey {
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // SECURITY FIX §2.2: clock regression must not silently produce timestamp=0,
+                // which bypasses replay protection. Log and use a safe sentinel value.
+                tracing::error!("SystemTime before UNIX_EPOCH (clock regression?): {:?}", e);
+                // Use u64::MAX as sentinel — treated as "very far in the future",
+                // which will be rejected by timestamp validation rather than accepted.
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         Ok(Self {
@@ -312,7 +337,14 @@ impl OneTimePreKey {
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // SECURITY FIX §2.2: clock regression must not silently produce timestamp=0,
+                // which bypasses replay protection. Log and use a safe sentinel value.
+                tracing::error!("SystemTime before UNIX_EPOCH (clock regression?): {:?}", e);
+                // Use u64::MAX as sentinel — treated as "very far in the future",
+                // which will be rejected by timestamp validation rather than accepted.
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         Self {
@@ -335,7 +367,10 @@ impl OneTimePreKey {
     pub fn is_expired(&self) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                tracing::error!("SystemTime clock regression in is_expired: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         now > self.created_at + 30 * 86400
@@ -397,7 +432,10 @@ impl PinnedKey {
 
         let pinned_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                tracing::error!("SystemTime clock regression in pin_peer_key: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         Self { identity_key, pinned_at, verified: false, safety_number }
@@ -699,7 +737,7 @@ impl KeyStore {
         use crate::crypto::CryptoHandler;
 
         // Serialize with bincode
-        let plaintext = bincode::serialize(self)
+        let plaintext = bincode::encode_to_vec(self, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)?;
 
         // Encrypt with ChaCha20-Poly1305
@@ -720,7 +758,7 @@ impl KeyStore {
         let plaintext = handler.decrypt(data, b"SibnaKeyStore_v3")
             .map_err(|_| ProtocolError::StorageError)?;
 
-        let mut store: KeyStore = bincode::deserialize(&plaintext)
+        let mut store: KeyStore = bincode::decode_from_slice(&plaintext, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|_| ProtocolError::DeserializationError)?;
 
         // Restore transient (non-serialized) private key fields from their serialized bytes
@@ -822,10 +860,9 @@ impl KeyStore {
 
         let signature = Signature::from_bytes(signed_challenge);
 
-        match verifying_key.verify(challenge, &signature) {
-            Ok(()) => Ok(true),
-            Err(_) => Ok(false),
-        }
+        verifying_key.verify(challenge, &signature)
+            .map(|_| true)
+            .map_err(|_| ProtocolError::InvalidSignature)
     }
 
     // ----------------------------------------------------------------
@@ -962,7 +999,8 @@ mod tests {
         let signature = keypair.sign(data).unwrap();
         
         assert!(keypair.verify(data, &signature).unwrap());
-        assert!(!keypair.verify(b"wrong data", &signature).unwrap());
+        // SECURITY FIX §4.4: verify() now returns Err on bad signature, not Ok(false)
+        assert!(keypair.verify(b"wrong data", &signature).is_err());
     }
 
     #[test]

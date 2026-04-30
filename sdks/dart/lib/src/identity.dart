@@ -50,10 +50,24 @@ class IdentityKeyPair {
   String get publicKeyBase64 => x25519PublicKey.toBase64();
 
   /// Verify a signature
+  /// Verify a signature against this identity key.
+  ///
+  /// FIX: Old implementation returned `signature.length == 64` — meaning ANY
+  /// 64-byte value passed verification regardless of its content. This is a
+  /// critical cryptographic failure: it accepts forged signatures.
+  ///
+  /// The Dart/Flutter SDK uses FFI to call the native Rust core. Until FFI is
+  /// wired, this method MUST throw rather than silently accept forged input.
+  /// Callers that depend on this method must integrate the FFI bindings first.
   bool verifySignature(Uint8List data, Uint8List signature) {
-    // This would call the native library in production
-    // For now, return a placeholder
-    return signature.length == 64;
+    if (signature.length != 64) return false;
+    // SECURITY: Do NOT accept without cryptographic verification.
+    // This will be replaced by a call to sibna_identity_verify() via FFI.
+    throw UnimplementedError(
+      'verifySignature() requires FFI native library integration. '
+      'See sdks/dart/lib/src/bindings.dart for the sibna_identity_verify() binding. '
+      'Do NOT bypass this by returning true — that would accept forged signatures.'
+    );
   }
 
   /// Sign data
@@ -172,11 +186,16 @@ class PreKeyBundle {
     return now.difference(timestamp).inDays > 7;
   }
 
-  /// Verify the signature
+  /// Verify the prekey bundle signature against the given identity public key.
+  ///
+  /// FIX: Was `return signature.length == 64` — accepts ANY 64-byte forged sig.
+  /// Throws UnimplementedError until FFI bindings are wired.
   bool verifySignature(Uint8List identityPublicKey) {
-    // This would call the native library in production
-    // For now, return a placeholder
-    return signature.length == 64;
+    if (signature.length != 64 || identityPublicKey.length != 32) return false;
+    throw UnimplementedError(
+      'PreKeyBundle.verifySignature() requires FFI native library. '
+      'Do NOT replace with return-true — that breaks X3DH security.'
+    );
   }
 
   @override

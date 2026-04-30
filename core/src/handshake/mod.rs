@@ -89,7 +89,7 @@ impl HandshakeOutput {
     ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression in handshake: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
 
         Self {
@@ -235,7 +235,7 @@ impl PreKeyBundle {
     ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression in handshake: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
 
         // Expire in 30 days

@@ -78,19 +78,25 @@ class SibnaSession {
     }
 
     // This would use the session's ratchet in production
-    // For now, use standalone crypto
-    final key = SibnaCrypto.generateKey();
-    try {
-      final ciphertext = SibnaCrypto.encrypt(
-        key,
-        plaintext,
-        associatedData: associatedData,
+    // FIX: Old code generated a fresh random key per message — meaning every
+    // ciphertext used a DIFFERENT key unknown to the recipient → undecryptable.
+    // This is a protocol correctness failure, not just a stub.
+    //
+    // Correct behaviour: delegate to the native session handle which drives
+    // the Double Ratchet internally. Until sibna_session_encrypt() is added
+    // to the FFI layer, throw explicitly rather than silently produce garbage.
+    if (_handle == null || _handle == nullptr) {
+      throw UnimplementedError(
+        'SibnaSession.encrypt() requires an active native session handle. '
+        'Call performHandshake() first and ensure sibna_session_encrypt() '
+        'is exported from libsibna.so. '
+        'Do NOT call SibnaCrypto.encrypt() with a random key — the peer '
+        'cannot decrypt without knowing the key.',
       );
-      _messagesSent++;
-      return ciphertext;
-    } finally {
-      key.secureClear();
     }
+    // TODO: call SibnaCrypto._nativeSessionEncrypt(_handle!, plaintext, associatedData)
+    // once sibna_session_encrypt() is added to ffi_bindings.dart.
+    throw UnimplementedError('sibna_session_encrypt() not yet exported from FFI layer.');
   }
 
   /// Decrypt a message
@@ -111,8 +117,14 @@ class SibnaSession {
       );
     }
 
-    // This would use the session's ratchet in production
-    throw UnimplementedError('Session-based decryption requires native library');
+    // FIX: Same issue as encrypt — throw explicitly with a clear message.
+    if (_handle == null || _handle == nullptr) {
+      throw UnimplementedError(
+        'SibnaSession.decrypt() requires an active native session handle. '
+        'Ensure sibna_session_decrypt() is exported from libsibna.so.',
+      );
+    }
+    throw UnimplementedError('sibna_session_decrypt() not yet exported from FFI layer.');
   }
 
   /// Get the current message number

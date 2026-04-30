@@ -82,6 +82,15 @@ pub fn pad_message(plaintext: &[u8], mode: PaddingMode) -> ProtocolResult<Vec<u8
     rng.fill_bytes(&mut prefix_noise);
 
     let block = mode.block_size();
+
+    // SECURITY FIX §5.1: Custom block size must be a power of two and at least 64 bytes.
+    // Invalid block sizes produce non-aligned output that breaks unpad_message and
+    // leaks message size information. debug_assert was insufficient (no-op in release).
+    if let PaddingMode::Custom(n) = mode {
+        if n == 0 || !n.is_power_of_two() || n < 64 {
+            return Err(ProtocolError::InvalidArgument);
+        }
+    }
     let min_total = 1 + prefix_len + plaintext.len() + 2;
 
     // 2. Calculate how many trailing bytes needed to reach block boundary

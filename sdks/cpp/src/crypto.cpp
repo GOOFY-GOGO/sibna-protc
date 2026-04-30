@@ -45,8 +45,23 @@ Result<bytes> Crypto::encrypt(
         return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to generate nonce");
     }
 
-    // Initialize encryption
-    if (EVP_EncryptInit_ex(ctx, EVP_chacha20_poly1305(), nullptr, 
+    // FIX: ChaCha20-Poly1305 requires a two-phase OpenSSL init:
+    //   Phase 1 — set algorithm, no key/iv yet (pass nullptr, nullptr)
+    //   Phase 2 — set explicit IV length, then init key+iv
+    // Without Phase 1 first, the IV length control call is ignored on some
+    // OpenSSL versions and a 16-byte IV may be used instead of the 12-byte
+    // RFC 8439 nonce, producing ciphertext incompatible with other SDK implementations.
+    if (EVP_EncryptInit_ex(ctx, EVP_chacha20_poly1305(), nullptr,
+                           nullptr, nullptr) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to init cipher");
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN,
+                             static_cast<int>(NONCE_LENGTH), nullptr) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to set IV length");
+    }
+    if (EVP_EncryptInit_ex(ctx, nullptr, nullptr,
                            key.data(), iv.data()) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to initialize encryption");
@@ -132,8 +147,18 @@ Result<bytes> Crypto::decrypt(
         return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to create cipher context");
     }
 
-    // Initialize decryption
-    if (EVP_DecryptInit_ex(ctx, EVP_chacha20_poly1305(), nullptr, 
+    // FIX: Two-phase init (same as encrypt) — set IVLEN before key+IV
+    if (EVP_DecryptInit_ex(ctx, EVP_chacha20_poly1305(), nullptr,
+                           nullptr, nullptr) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to init cipher");
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN,
+                             static_cast<int>(NONCE_LENGTH), nullptr) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to set IV length");
+    }
+    if (EVP_DecryptInit_ex(ctx, nullptr, nullptr,
                            key.data(), iv.data()) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to initialize decryption");

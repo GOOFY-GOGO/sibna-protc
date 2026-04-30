@@ -86,4 +86,57 @@ class _SibnaBindings {
       .lookup<NativeFunction<Void Function(Pointer<_ByteBuffer>)>>(
           'sibna_free_buffer')
       .asFunction<void Function(Pointer<_ByteBuffer>)>();
+
+  // ── Session encrypt / decrypt (Double Ratchet) ────────────
+  // FIX: These were missing — session.dart silently used a random ephemeral
+  // key per message that the recipient could never decrypt.
+  // Rust core must export sibna_session_encrypt / sibna_session_decrypt.
+  late final sibna_session_encrypt = _lib
+      .lookup<NativeFunction<
+          Int32 Function(Pointer<Void>, Pointer<Uint8>, Size,
+              Pointer<Uint8>, Size, Pointer<_ByteBuffer>)>>(
+          'sibna_session_encrypt')
+      .asFunction<
+          int Function(Pointer<Void>, Pointer<Uint8>, int,
+              Pointer<Uint8>, int, Pointer<_ByteBuffer>)>();
+
+  late final sibna_session_decrypt = _lib
+      .lookup<NativeFunction<
+          Int32 Function(Pointer<Void>, Pointer<Uint8>, Size,
+              Pointer<Uint8>, Size, Pointer<_ByteBuffer>)>>(
+          'sibna_session_decrypt')
+      .asFunction<
+          int Function(Pointer<Void>, Pointer<Uint8>, int,
+              Pointer<Uint8>, int, Pointer<_ByteBuffer>)>();
+
+  // ── Group session ─────────────────────────────────────────
+  // FIX: sibna_group_create was missing — group.dart threw UnimplementedError.
+  late final sibna_group_create = _lib
+      .lookup<NativeFunction<
+          Int32 Function(Pointer<Uint8>, Size, Pointer<Pointer<Void>>)>>(
+          'sibna_group_create')
+      .asFunction<int Function(Pointer<Uint8>, int, Pointer<Pointer<Void>>)>();
+
+  late final sibna_group_destroy = _lib
+      .lookup<NativeFunction<Void Function(Pointer<Void>)>>('sibna_group_destroy')
+      .asFunction<void Function(Pointer<Void>)>();
+
+  // ── Identity: generate and verify ────────────────────────
+  // FIX: Both were missing — context.dart and identity.dart stubs could not
+  // generate real keys or verify signatures.
+  late final sibna_identity_generate = _lib
+      .lookup<NativeFunction<
+          Int32 Function(Pointer<Uint8>, Pointer<Uint8>, Pointer<Pointer<Void>>)>>(
+          'sibna_identity_generate')
+      .asFunction<int Function(Pointer<Uint8>, Pointer<Uint8>, Pointer<Pointer<Void>>)>();
+
+  late final sibna_identity_verify = _lib
+      .lookup<NativeFunction<
+          Int32 Function(Pointer<Uint8>, Pointer<Uint8>, Size, Pointer<Uint8>)>>(
+          'sibna_identity_verify')
+      .asFunction<int Function(Pointer<Uint8>, Pointer<Uint8>, int, Pointer<Uint8>)>();
+
+  late final sibna_identity_destroy = _lib
+      .lookup<NativeFunction<Void Function(Pointer<Void>)>>('sibna_identity_destroy')
+      .asFunction<void Function(Pointer<Void>)>();
 }

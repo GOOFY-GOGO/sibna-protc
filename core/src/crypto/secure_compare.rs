@@ -36,28 +36,18 @@ pub fn constant_time_copy(condition: bool, dst: &mut [u8], src: &[u8]) {
     }
 }
 
-/// Lexicographic byte-slice comparison for **non-sensitive** ordering only.
+/// Lexicographic byte-slice ordering for **non-sensitive** data only (e.g. role resolution).
 ///
-/// # ⚠️ SECURITY WARNING — NOT CONSTANT-TIME
-/// Despite being in the `secure_compare` module, this function uses early-exit
-/// comparisons and is **NOT** safe against timing attacks. It must never be
-/// used to compare secrets, tokens, MACs, or any security-sensitive data.
-/// Use `constant_time_eq` for any sensitive comparison.
+/// # ⚠️ SECURITY FIX — §2.1
+/// Previously `pub` — changed to `pub(crate)` to prevent misuse from external code.
+/// Uses `std::cmp::Ord` (not constant-time) and MUST NEVER be used on secrets,
+/// tokens, MACs, or any cryptographic material. For those, use `constant_time_eq`.
+///
+/// Returns `std::cmp::Ordering` (not i8) to align with Rust idioms and avoid
+/// sign-extension bugs when len difference overflows i8.
 #[doc(hidden)]
-pub fn lexicographic_cmp_non_constant_time(a: &[u8], b: &[u8]) -> i8 {
-    if a.len() != b.len() {
-        return (a.len() as i8) - (b.len() as i8);
-    }
-
-    let mut result: i8 = 0;
-    for i in 0..a.len() {
-        let diff = (a[i] as i8) - (b[i] as i8);
-        // Manual logic kept here for lexicographic non-sensitive ordering
-        let is_equal = (result == 0) as i8;
-        result = result * (1 - is_equal) + diff * is_equal;
-    }
-
-    result
+pub(crate) fn lexicographic_order_non_sensitive(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    a.cmp(b)
 }
 
 /// Check if a byte slice is all zeros in constant time

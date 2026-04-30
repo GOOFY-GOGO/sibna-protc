@@ -107,7 +107,11 @@ impl SenderKey {
         // Securely update chain key
         self.chain_key.zeroize();
         self.chain_key = next_chain.to_vec();
-        self.message_number += 1;
+        // SECURITY FIX §4.2: u32 overflows after ~4 billion messages, causing key reuse.
+        // Use checked_add and return an error rather than wrapping silently.
+        self.message_number = self.message_number
+            .checked_add(1)
+            .ok_or(ProtocolError::MessageNumberOverflow)?;
         
         Ok(message_key)
     }
@@ -117,7 +121,7 @@ impl SenderKey {
         if let Some(expiration) = self.expiration {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
+                .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
                 .as_secs();
             
             return now > expiration;
@@ -129,7 +133,7 @@ impl SenderKey {
     pub fn age_secs(&self) -> u64 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
         
         now.saturating_sub(self.created_at)
@@ -174,7 +178,7 @@ impl SenderKeyMessage {
     ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
 
         Self {
@@ -238,7 +242,7 @@ impl GroupSession {
     pub fn new(group_id: GroupId, max_size: usize) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
 
         Self {
@@ -325,7 +329,7 @@ impl GroupSession {
         
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
 
         let mut message = GroupMessage {
@@ -421,6 +425,23 @@ impl GroupSession {
             return Err(ProtocolError::Expired);
         }
 
+        // SECURITY FIX §5.2: Epoch rollback protection.
+        // An attacker could replay an old SenderKeyDistributionMessage with a lower
+        // key_id to force a weaker or reused key. Reject any imported key whose key_id
+        // is less than or equal to the currently stored key_id for this sender.
+        if let Some(existing) = self.sender_keys.get(&public_key) {
+            if key.key_id <= existing.key_id {
+                tracing::warn!(
+                    "import_sender_key: rejecting key_id={} for sender {:?} — \
+                     current key_id={} (possible epoch rollback attack)",
+                    key.key_id,
+                    &public_key[..4],
+                    existing.key_id
+                );
+                return Err(ProtocolError::InvalidArgument);
+            }
+        }
+
         self.sender_keys.insert(public_key, key);
         self.touch();
         Ok(())
@@ -430,7 +451,7 @@ impl GroupSession {
     fn touch(&mut self) {
         self.last_activity = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
     }
 
@@ -448,7 +469,7 @@ impl GroupSession {
     pub fn age_secs(&self) -> u64 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
         
         now.saturating_sub(self.created_at)
@@ -541,13 +562,13 @@ impl GroupMessage {
 
     /// Serialize to bytes
     pub fn to_bytes(&self) -> ProtocolResult<Vec<u8>> {
-        bincode::serialize(self)
+        bincode::encode_to_vec(self, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)
     }
 
     /// Deserialize from bytes
     pub fn from_bytes(data: &[u8]) -> ProtocolResult<Self> {
-        bincode::deserialize(data)
+        bincode::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|_| ProtocolError::DeserializationError)
     }
 }
@@ -617,7 +638,7 @@ impl GroupManager {
     pub fn prune_inactive(&mut self, max_age_secs: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
             .as_secs();
 
         self.groups.retain(|_, g| {

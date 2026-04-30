@@ -331,7 +331,7 @@ impl SecureContext {
         // Create rate limiter
         let rate_limiter = RateLimiter::new();
 
-        Ok(Self {
+        let ctx = Self {
             keystore: Arc::new(RwLock::new(keystore)),
             sessions: Arc::new(RwLock::new(sessions)),
             groups: Arc::new(RwLock::new(groups)),
@@ -343,7 +343,24 @@ impl SecureContext {
             rate_limiter: Arc::new(RwLock::new(rate_limiter)),
             sequence_number: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             created_at: std::time::Instant::now(),
-        })
+        };
+
+        // SECURITY FIX §3.1: When a db_path is configured and a master_password is
+        // provided, auto-persist immediately so the salt is never lost. Without this,
+        // a restart after ::new but before the caller calls save() would make the
+        // keystore unrecoverable (different salt → different storage key).
+        if config.db_path.is_some() && master_password.is_some() {
+            if let Err(e) = ctx.auto_persist_salt() {
+                tracing::error!(
+                    "CRITICAL: failed to persist storage salt after SecureContext::new: {:?}. \
+                     The context is usable in this session but WILL NOT survive restart. \
+                     Call ctx.save() manually and verify it succeeds.",
+                    e
+                );
+            }
+        }
+
+        Ok(ctx)
     }
 
     /// Create an in-memory context (for WASM/testing)
@@ -809,6 +826,58 @@ impl SecureContext {
     }
 
     /// Save the entire context to disk atomically.
+    /// SECURITY FIX §3.1: Persist the storage salt immediately after context creation
+    /// when a db_path is configured. This ensures the salt is never lost between sessions.
+    /// The salt file is written to `{db_path}.salt` alongside the main storage file.
+    fn auto_persist_salt(&self) -> ProtocolResult<()> {
+        use std::io::Write;
+        let db_path = match &self.config.db_path {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+        let salt_path = format!("{}.salt", db_path);
+        let salt = self.storage_salt.read();
+
+        // Check if salt file already exists — do not overwrite an existing salt,
+        // as that would make previously saved data unrecoverable.
+        if std::path::Path::new(&salt_path).exists() {
+            return Ok(());
+        }
+
+        let tmp_path = format!("{}.tmp", salt_path);
+        let mut f = std::fs::File::create(&tmp_path)
+            .map_err(|_| ProtocolError::StorageError)?;
+        f.write_all(b"SIBNA_SALT_V1")
+            .map_err(|_| ProtocolError::StorageError)?;
+        f.write_all(&*salt)
+            .map_err(|_| ProtocolError::StorageError)?;
+        f.sync_all()
+            .map_err(|_| ProtocolError::StorageError)?;
+        drop(f);
+        std::fs::rename(&tmp_path, &salt_path)
+            .map_err(|_| ProtocolError::StorageError)?;
+
+        tracing::info!("storage salt persisted to {}", salt_path);
+        Ok(())
+    }
+
+    /// Load the storage salt from `{db_path}.salt`.
+    /// Returns None if the file does not exist (new context).
+    pub fn load_salt_from_disk(db_path: &str) -> Option<[u8; 32]> {
+        use std::io::Read;
+        let salt_path = format!("{}.salt", db_path);
+        let mut f = std::fs::File::open(&salt_path).ok()?;
+        let mut header = [0u8; 13]; // b"SIBNA_SALT_V1"
+        f.read_exact(&mut header).ok()?;
+        if &header != b"SIBNA_SALT_V1" {
+            tracing::error!("salt file header mismatch — refusing to load");
+            return None;
+        }
+        let mut salt = [0u8; 32];
+        f.read_exact(&mut salt).ok()?;
+        Some(salt)
+    }
+
     pub fn save_to_disk(&self, path: &std::path::Path) -> ProtocolResult<()> {
         let keystore = self.keystore.read();
         let sessions = self.sessions.read();

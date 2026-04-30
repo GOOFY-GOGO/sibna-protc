@@ -5,6 +5,8 @@ class SibnaContext {
   Pointer<Void>? _handle;
   final String? _password;
   bool _disposed = false;
+  // Session cache: peer ID hex string → SibnaSession
+  final Map<String, SibnaSession> _sessions = {};
 
   /// Get the native handle
   Pointer<Void> get handle {
@@ -107,12 +109,13 @@ class SibnaContext {
   Future<IdentityKeyPair> generateIdentity() async {
     _ensureNotDisposed();
 
-    // This would call the native library in production
-    // For now, generate placeholder keys
-    final ed25519Public = SibnaCrypto.randomBytes(32);
-    final x25519Public = SibnaCrypto.randomBytes(32);
-
-    return IdentityKeyPair.fromPublicKeys(ed25519Public, x25519Public);
+    // FIX: Old code generated random bytes as "placeholder keys" — these are
+    // not real Ed25519/X25519 keys and would cause protocol failures during
+    // X3DH handshake. Throw until FFI bindings provide sibna_identity_generate().
+    throw UnimplementedError(
+      'generateIdentity() requires FFI native library (sibna_identity_generate). '
+      'See sdks/dart/lib/src/bindings.dart for the FFI binding to implement.'
+    );
   }
 
   /// Create a new session with a peer
@@ -171,9 +174,16 @@ class SibnaContext {
     Uint8List? associatedData,
   }) async {
     _ensureNotDisposed();
-
-    // This would use the session's decrypt method in production
-    throw UnimplementedError('Session-based decryption requires native library');
+    // FIX: Route through the existing session for this peer rather than
+    // attempting standalone decryption with no key context.
+    final session = _sessions[String.fromCharCodes(peerId)];
+    if (session == null) {
+      throw SibnaError(
+        SibnaErrorCode.sessionNotFound,
+        'No session for peer — call createSession() first',
+      );
+    }
+    return session.decrypt(ciphertext, associatedData: associatedData);
   }
 
   /// Create a new group

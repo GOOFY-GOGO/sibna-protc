@@ -221,18 +221,32 @@ class SibnaCrypto {
   }
 }
 
-/// AES-GCM encryption (Dart implementation for platforms without native library)
+/// AES-GCM encryption stub.
+///
+/// FIX: The Sibna protocol uses ChaCha20-Poly1305, not AES-GCM.
+/// This class exists as a future extension point for platforms that
+/// hardware-accelerate AES (e.g. AES-NI on x86). It is NOT used in
+/// the current protocol and MUST NOT be used in production until fully
+/// implemented with a verified Dart/native binding.
+///
+/// Do not call these methods — they will always throw.
+@Deprecated('AesGcm is not implemented and not used by the Sibna Protocol v3. '
+    'Use ChaCha20Poly1305 (via SibnaCrypto.encrypt) instead.')
 class AesGcm {
-  /// Encrypt using AES-256-GCM
-  /// Note: This is a placeholder - use native library for production
+  /// NOT IMPLEMENTED — Sibna Protocol uses ChaCha20-Poly1305.
   static Uint8List encrypt(Uint8List key, Uint8List plaintext, Uint8List nonce) {
-    throw UnimplementedError('Use native library for AES-GCM encryption');
+    throw UnimplementedError(
+      'AesGcm.encrypt() is not implemented. '
+      'Use the native ChaCha20-Poly1305 via SibnaCrypto.encrypt() instead.'
+    );
   }
 
-  /// Decrypt using AES-256-GCM
-  /// Note: This is a placeholder - use native library for production
+  /// NOT IMPLEMENTED — Sibna Protocol uses ChaCha20-Poly1305.
   static Uint8List decrypt(Uint8List key, Uint8List ciphertext, Uint8List nonce) {
-    throw UnimplementedError('Use native library for AES-GCM decryption');
+    throw UnimplementedError(
+      'AesGcm.decrypt() is not implemented. '
+      'Use the native ChaCha20-Poly1305 via SibnaCrypto.decrypt() instead.'
+    );
   }
 }
 
