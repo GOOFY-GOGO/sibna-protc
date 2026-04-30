@@ -288,13 +288,46 @@ class SibnaClient:
         client.send_message(recipient_id="...", plaintext=b"Hello!")
     """
 
-    def __init__(self, server: str = "http://localhost:8080"):
+    def __init__(self, server: str = "http://localhost:8080",
+                 pinned_cert: Optional[str] = None):
+        """
+        Parameters
+        ----------
+        server : str
+            Base URL of the Sibna relay server.
+        pinned_cert : str, optional
+            SECURITY FIX §3.5: Path to a PEM file containing the server's
+            expected TLS certificate (or its CA). When set, any TLS certificate
+            not matching this file is rejected — even if signed by a trusted CA.
+            This prevents MITM attacks via compromised certificate authorities.
+
+            Generate your pinned cert with:
+                openssl s_client -connect your-server:443 </dev/null 2>/dev/null \\
+                    | openssl x509 -outform PEM > server.pem
+
+            Never omit this in production deployments.
+        """
         if not _REQUESTS_AVAILABLE:
             raise NetworkError("requests package required: pip install requests")
         self.server = server.rstrip("/")
         self.identity: Optional[Identity] = None
         self.jwt_token: Optional[str] = None
         self._session = requests.Session()
+
+        # SECURITY FIX §3.5: Apply certificate pinning when a cert path is provided.
+        # For HTTPS servers without pinning, requests still validates against the system
+        # trust store — but CA compromise is not mitigated without pinning.
+        if pinned_cert is not None:
+            if not os.path.isfile(pinned_cert):
+                raise ValueError(f"pinned_cert path does not exist: {pinned_cert!r}")
+            self._session.verify = pinned_cert
+        elif server.startswith("https://"):
+            import warnings
+            warnings.warn(
+                "SibnaClient: HTTPS server configured without certificate pinning. "
+                "Pass pinned_cert='/path/to/server.pem' to enable pinning.",
+                stacklevel=2
+            )
 
     def generate_identity(self, private_key_bytes: Optional[bytes] = None) -> Identity:
         """Generate (or load) an Ed25519 identity keypair."""
@@ -461,13 +494,43 @@ class AsyncSibnaClient:
         await client.send("recipient_hex", b"Hello!")
     """
 
-    def __init__(self, server: str = "http://localhost:8080"):
+    def __init__(self, server: str = "http://localhost:8080",
+                 pinned_cert: Optional[str] = None):
+        """
+        Parameters
+        ----------
+        server : str
+            Base URL of the Sibna relay server.
+        pinned_cert : str, optional
+            SECURITY FIX §3.5: Path to a PEM file for TLS certificate pinning.
+            See SibnaClient.__init__ for full documentation.
+        """
         self.server = server.rstrip("/")
         self.ws_server = server.replace("http://", "ws://").replace("https://", "wss://")
         self.identity: Optional[Identity] = None
         self.jwt_token: Optional[str] = None
         self._ws = None
         self._on_message: Optional[Callable] = None
+        self._pinned_cert: Optional[str] = pinned_cert
+
+        if pinned_cert is not None and not os.path.isfile(pinned_cert):
+            raise ValueError(f"pinned_cert path does not exist: {pinned_cert!r}")
+        if pinned_cert is None and server.startswith("https://"):
+            import warnings
+            warnings.warn(
+                "AsyncSibnaClient: HTTPS server without certificate pinning. "
+                "Pass pinned_cert='/path/to/server.pem' to enable pinning.",
+                stacklevel=2
+            )
+
+    def _make_ssl_context(self):
+        """Build an ssl.SSLContext with optional certificate pinning."""
+        import ssl
+        ctx = ssl.create_default_context()
+        if self._pinned_cert:
+            # Replace the default CA store with only the pinned certificate.
+            ctx.load_verify_locations(cafile=self._pinned_cert)
+        return ctx
 
     def generate_identity(self, private_key_bytes: Optional[bytes] = None) -> Identity:
         self.identity = Identity(private_key_bytes)
@@ -480,7 +543,9 @@ class AsyncSibnaClient:
         if not self.identity:
             raise AuthError("No identity loaded.")
 
-        async with aiohttp.ClientSession() as session:
+        ssl_ctx = self._make_ssl_context() if self.server.startswith("https://") else None
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx) if ssl_ctx else None
+        async with aiohttp.ClientSession(connector=connector) as session:
             # Challenge
             async with session.post(
                 f"{self.server}/v1/auth/challenge",
@@ -521,7 +586,11 @@ class AsyncSibnaClient:
         self._on_message = on_message
         ws_url = f"{self.ws_server}/ws?token={self.jwt_token}"
 
-        async with aiohttp.ClientSession() as session:
+        # SECURITY FIX §3.5: Apply certificate pinning for WSS connections.
+        ssl_ctx = self._make_ssl_context() if self.ws_server.startswith("wss://") else None
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx) if ssl_ctx else None
+
+        async with aiohttp.ClientSession(connector=connector) as session:
             async with session.ws_connect(ws_url) as ws:
                 self._ws = ws
                 print(f"🟢 WebSocket connected to {ws_url[:40]}...")

@@ -64,8 +64,9 @@ pub struct RuntimeState {
     pub limiter: Arc<RateLimiter>,
     /// Connected WebSocket clients: identity_key_hex → sender channel
     pub clients: DashMap<String, ws::ClientTx>,
-    /// JWT signing secret (from env or random on startup)
-    pub jwt_secret: String,
+    /// JWT signing secret — zeroized on drop to prevent secret leakage in core dumps
+    /// SECURITY FIX §4.6
+    pub jwt_secret: zeroize::Zeroizing<String>,
 }
 
 /// Centralized Auth Extractor — ensures MUST-BE-AUTHENTICATED for protected routes.
@@ -125,12 +126,45 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
     let tree_challenges = db.open_tree("auth_challenges")?;
 
     // JWT secret
+    // SECURITY FIX §3.2: In production, a missing JWT secret is a fatal misconfiguration.
+    // An ephemeral secret invalidates all active sessions on every restart (implicit DoS)
+    // and indicates the deployment was not properly secured.
+    // Set SIBNA_ENV=production to enforce this. In development/test, a warning suffices.
+    let is_production = std::env::var("SIBNA_ENV")
+        .map(|v| v.to_lowercase() == "production")
+        .unwrap_or(false);
+
     let jwt_secret = Arc::new(
-        std::env::var("SIBNA_JWT_SECRET")
-            .unwrap_or_else(|_| {
-                warn!("SIBNA_JWT_SECRET not set — generating ephemeral secret");
+        match std::env::var("SIBNA_JWT_SECRET") {
+            Ok(secret) if secret.len() >= 32 => secret,
+            Ok(short) => {
+                tracing::error!(
+                    "SIBNA_JWT_SECRET is set but too short ({} chars, minimum 32). \
+                     Use a cryptographically random 64-char hex string.",
+                    short.len()
+                );
+                if is_production {
+                    return Err("SIBNA_JWT_SECRET too short — refusing to start in production".into());
+                }
+                warn!("Using short JWT secret in non-production mode — DO NOT use in production");
+                short
+            }
+            Err(_) => {
+                if is_production {
+                    tracing::error!(
+                        "SIBNA_JWT_SECRET is not set. Refusing to start in production. \
+                         Generate a secret with: openssl rand -hex 32"
+                    );
+                    return Err("SIBNA_JWT_SECRET not set — refusing to start in production".into());
+                }
+                warn!(
+                    "SIBNA_JWT_SECRET not set — generating ephemeral secret. \
+                     ALL SESSIONS WILL BE INVALIDATED ON RESTART. \
+                     Set SIBNA_ENV=production to prevent this."
+                );
                 hex::encode(random_bytes_32())
-            })
+            }
+        }
     );
 
     let mut limiter = RateLimiter::new();
@@ -163,7 +197,7 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
     let rt_state = Arc::new(RuntimeState {
         limiter: Arc::new(limiter),
         clients: DashMap::new(),
-        jwt_secret: (*jwt_secret).clone(),
+        jwt_secret: zeroize::Zeroizing::new((*jwt_secret).clone()),
     });
 
     let state = AppState {
@@ -211,7 +245,39 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
     }
 
     info!("Sibna Server listening on {}", addr);
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+
+    // SECURITY FIX §3.4: Graceful shutdown on SIGTERM/SIGINT.
+    // Without this, an abrupt kill can corrupt sled's append-only log (torn writes),
+    // leave .tmp atomic-write files, and interrupt in-flight WebSocket sessions.
+    let db_for_shutdown = state.db.clone();
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(async move {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigterm = signal(SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler");
+                let mut sigint = signal(SignalKind::interrupt())
+                    .expect("failed to register SIGINT handler");
+                tokio::select! {
+                    _ = sigterm.recv() => { info!("SIGTERM received — starting graceful shutdown"); }
+                    _ = sigint.recv()  => { info!("SIGINT received — starting graceful shutdown");  }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::signal::ctrl_c().await
+                    .expect("failed to register Ctrl-C handler");
+                info!("Ctrl-C received — starting graceful shutdown");
+            }
+            // Flush sled to disk before exit to prevent log corruption
+            if let Err(e) = db_for_shutdown.sled.flush_async().await {
+                tracing::error!("sled flush failed during shutdown: {:?}", e);
+            } else {
+                info!("sled flushed successfully");
+            }
+        })
+        .await?;
     Ok(())
 }
 

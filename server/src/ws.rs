@@ -86,6 +86,15 @@ pub async fn ws_handler(
 
 /// Handle an authenticated WebSocket connection
 async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
+    // SECURITY FIX §5.3: WebSocket read timeout is now configurable via
+    // SIBNA_WS_TIMEOUT_SECS (default: 120). The previous hardcoded 10s was too
+    // aggressive for slow connections (2G, satellite) and could not be tuned.
+    let ws_timeout_secs: u64 = std::env::var("SIBNA_WS_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let ws_timeout = std::time::Duration::from_secs(ws_timeout_secs);
+
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -109,8 +118,24 @@ async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
     let state_clone = state.clone();
     let id_clone = identity_id.clone();
     let recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            let raw: Option<Vec<u8>> = match msg {
+        loop {
+            // SECURITY FIX §5.3: Apply configurable idle timeout per message receive.
+            // Stale/zombie connections are terminated after ws_timeout_secs of inactivity.
+            let msg_result = tokio::time::timeout(ws_timeout, receiver.next()).await;
+            let frame = match msg_result {
+                Err(_elapsed) => {
+                    warn!(
+                        "WS_TIMEOUT: client {} idle for {}s — disconnecting",
+                        id_clone.get(..16).unwrap_or(&id_clone),
+                        ws_timeout_secs
+                    );
+                    break;
+                }
+                Ok(None) => break,
+                Ok(Some(Err(_))) => break,
+                Ok(Some(Ok(msg))) => msg,
+            };
+            let raw: Option<Vec<u8>> = match frame {
                 Message::Binary(data) => Some(data),
                 Message::Text(text) => Some(text.into_bytes()),
                 Message::Close(_) => break,

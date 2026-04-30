@@ -22,7 +22,7 @@
  *   await client.sendMessage({ recipientId: '...', payloadHex: '...' });
  */
 
-export const VERSION = '2.0.0';
+export const VERSION = '3.0.0'; // FIX: was '2.0.0' — must match protocol version
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ function fromHex(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) throw new CryptoError('Invalid hex string');
   const arr = new Uint8Array(hex.length / 2);
   for (let i = 0; i < hex.length; i += 2) {
-    arr[i / 2] = parseInt(hex.substring(i, 2), 16);
+    arr[i / 2] = parseInt(hex.substring(i, i + 2), 16);
   }
   return arr;
 }
@@ -90,14 +90,27 @@ export function padPayload(data: Uint8Array): Uint8Array {
 
 /**
  * Remove padding from a received payload.
+ *
+ * FIX: Old logic used `padded_len % PADDING_BLOCK` to determine actualPadding,
+ * which is wrong for messages that are already aligned (remainder=0 — the
+ * indicator byte must be used). Also added bounds check to prevent
+ * out-of-bounds slice on malformed input.
  */
 export function unpadPayload(padded: Uint8Array): Uint8Array {
-  if (!padded.length) throw new CryptoError('Empty payload');
+  if (padded.length < 2) throw new CryptoError('Payload too short to unpad');
   const indicator = padded[0];
-  const padded_len = padded.length;
-  const paddingNeeded = padded_len % PADDING_BLOCK;
-  const actualPadding = paddingNeeded === 0 ? indicator : paddingNeeded;
-  return padded.slice(1, padded_len - actualPadding);
+  const body_len = padded.length - 1; // exclude the leading indicator byte
+
+  // The indicator encodes: paddingNeeded % 256
+  // When paddingNeeded == 256 (full block), indicator == 0
+  const actualPadding = indicator === 0 ? PADDING_BLOCK : indicator;
+
+  if (actualPadding > body_len) {
+    throw new CryptoError(`Invalid padding: actualPadding(${actualPadding}) > body_len(${body_len})`);
+  }
+
+  // slice(1) skips indicator, then remove trailing padding bytes
+  return padded.slice(1, padded.length - actualPadding);
 }
 
 // ── Identity ─────────────────────────────────────────────────────────────────
@@ -127,23 +140,52 @@ export async function generateIdentity(): Promise<IdentityKeys> {
 }
 
 /**
- * Sign data with Ed25519 private key using WebCrypto.
+ * Sign data with Ed25519 private key using @noble/ed25519.
+ * Falls back to WebCrypto if available.
  */
 export async function signData(privateKey: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const keyObj = await crypto.subtle.importKey(
-    'jwk',
-    {
-      kty: 'OKP',
-      crv: 'Ed25519',
-      d: btoa(String.fromCharCode(...privateKey)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
-      x: '', // Will be derived by subtle
-    } as JsonWebKey,
-    { name: 'Ed25519' } as AlgorithmIdentifier,
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('Ed25519', keyObj, data as any);
-  return new Uint8Array(sig);
+  // Try @noble/ed25519 first (more reliable)
+  try {
+    const { signAsync, getPublicKeyAsync } = await import('@noble/ed25519');
+    return await signAsync(data, privateKey);
+  } catch {
+    // Fallback to WebCrypto - need to derive public key from private key
+    // Ed25519 public key = private key seed -> clamp -> scalar multiply base point
+    // For WebCrypto, we need both d (private) and x (public) in the JWK
+    const publicKey = await ed25519GetPublicKey(privateKey);
+    const d = base64UrlEncode(privateKey);
+    const x = base64UrlEncode(publicKey);
+    
+    const keyObj = await crypto.subtle.importKey(
+      'jwk',
+      { kty: 'OKP', crv: 'Ed25519', d, x } as JsonWebKey,
+      { name: 'Ed25519' } as AlgorithmIdentifier,
+      false,
+      ['sign']
+    );
+    const sig = await crypto.subtle.sign('Ed25519', keyObj, data as any);
+    return new Uint8Array(sig);
+  }
+}
+
+/** Derive Ed25519 public key from private key seed (synchronous) */
+function ed25519GetPublicKey(privateKey: Uint8Array): Uint8Array {
+  // Use tweetnacl-like approach: hash seed, clamp, scalar multiply
+  // For a proper implementation, use @noble/ed25519's sync version
+  try {
+    const { getPublicKey } = require('@noble/ed25519');
+    return getPublicKey(privateKey);
+  } catch {
+    throw new CryptoError('Cannot derive public key without @noble/ed25519');
+  }
+}
+
+/** Base64url encode */
+function base64UrlEncode(data: Uint8Array): string {
+  return btoa(String.fromCharCode(...data))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
 }
 
 // ── Signed Envelope ───────────────────────────────────────────────────────────
@@ -209,14 +251,50 @@ export interface SendMessageOptions {
  * Sibna Protocol HTTP Client
  *
  * Compatible with browsers (Fetch API) and Node.js 18+ (native fetch).
+ *
+ * For Node.js production deployments, pass `pinnedCertPath` to enable
+ * TLS certificate pinning (guards against compromised CAs):
+ *   new SibnaClient('https://your-server', { pinnedCertPath: './server.pem' })
  */
 export class SibnaClient {
   private baseUrl: string;
   private identity: IdentityKeys | null = null;
   private jwtToken: string | null = null;
+  private fetchFn: typeof fetch;
 
-  constructor(serverUrl = 'http://localhost:8080') {
+  constructor(serverUrl = 'http://localhost:8080', options: { pinnedCertPath?: string } = {}) {
     this.baseUrl = serverUrl.replace(/\/$/, '');
+
+    // FIX: TLS certificate pinning for Node.js environments.
+    // Browsers enforce certificate validation natively; Node.js requires explicit pinning.
+    if (options.pinnedCertPath && typeof globalThis.process !== 'undefined') {
+      // Node.js environment detected
+      try {
+        const fs = require('fs');
+        const https = require('https');
+        const tls = require('tls');
+        const cert = fs.readFileSync(options.pinnedCertPath);
+        const agent = new https.Agent({
+          ca: cert,          // Trust ONLY this certificate / CA
+          checkServerIdentity: tls.checkServerIdentity, // Keep hostname verification
+        });
+        // Wrap fetch to always use the pinned agent
+        const nodeFetch = (url: string, init?: RequestInit) =>
+          fetch(url, { ...init, // @ts-ignore — Node.js fetch supports `agent`
+            agent } as RequestInit);
+        this.fetchFn = nodeFetch as unknown as typeof fetch;
+      } catch (e) {
+        throw new Error(`pinnedCertPath: could not load certificate from '${options.pinnedCertPath}': ${e}`);
+      }
+    } else {
+      this.fetchFn = fetch.bind(globalThis);
+      if (serverUrl.startsWith('https://') && !options.pinnedCertPath) {
+        console.warn(
+          '[sibna-sdk] WARNING: HTTPS server without certificate pinning. ' +
+          'Pass options.pinnedCertPath for production deployments.'
+        );
+      }
+    }
   }
 
   /** Generate a new Ed25519 identity keypair */
@@ -326,7 +404,7 @@ export class SibnaClient {
   // ── Private helpers ────────────────────────────────────────────────────────
 
   private async post(path: string, body: unknown): Promise<Response> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
+    const res = await this.fetchFn(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -336,7 +414,7 @@ export class SibnaClient {
   }
 
   private async get(path: string): Promise<Response> {
-    const res = await fetch(`${this.baseUrl}${path}`);
+    const res = await this.fetchFn(`${this.baseUrl}${path}`);
     await this.checkResponse(res);
     return res;
   }

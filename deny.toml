@@ -31,28 +31,36 @@ copyleft = "deny"
 confidence-threshold = 0.8
 
 # ─── Security advisories ─────────────────────────────
+# SECURITY FIX §5.5: upgraded unmaintained from "warn" to "deny" so that
+# CI fails (not just warns) when a dependency has no active maintainer.
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 vulnerability = "deny"
-unmaintained = "warn"
-yanked = "deny"
-notice = "warn"
-ignore = []
+unmaintained  = "deny"
+yanked        = "deny"
+notice        = "warn"
+ignore = [
+    # KNOWN: sled 0.34 is unmaintained (tracked in §5.4 backlog — migrate to redb).
+    # Exception granted until Q3 2026 migration sprint. Review quarterly.
+    # "RUSTSEC-XXXX-XXXX",   # ← fill in if/when a sled advisory is issued
+]
 
 # ─── Dependency bans ─────────────────────────────────
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+wildcards         = "deny"
 deny = [
-    # Insecure or unmaintained crypto
-    { name = "md5" },
-    { name = "sha1" },
-    { name = "des" },
-    { name = "rc4" },
+    # Insecure or unmaintained crypto — never allow, no exceptions
+    { name = "md5"    },
+    { name = "sha1"   },
+    { name = "des"    },
+    { name = "rc4"    },
     { name = "crypto" },
-    # Avoid old rand versions
+    # Avoid old rand versions (pre-0.8 had weak default RNG seeding)
     { name = "rand", version = "<0.8" },
+    # bincode 1.x has known deserialization size-hint overflow — §5.4
+    { name = "bincode", version = "<2.0" },
 ]
 skip-tree = []
 

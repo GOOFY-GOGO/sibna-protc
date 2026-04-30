@@ -66,6 +66,42 @@ try:
 except OSError:
     _lib = None
 
+# FIX: Set up ctypes argtypes/restype for all FFI functions to enable
+# automatic type checking and prevent silent integer truncation bugs.
+# Previously no types were declared — ctypes defaulted to c_int for all
+# arguments, silently truncating 64-bit pointers on 32-bit systems.
+if _lib is not None:
+    _P_u8  = ctypes.POINTER(ctypes.c_uint8)
+    _P_vp  = ctypes.POINTER(ctypes.c_void_p)
+    _P_buf = ctypes.POINTER  # ByteBuffer is defined below; set later
+
+    # Context
+    _lib.sibna_context_create.argtypes  = [_P_u8, ctypes.c_size_t, _P_vp]
+    _lib.sibna_context_create.restype   = ctypes.c_int
+    _lib.sibna_context_destroy.argtypes = [ctypes.c_void_p]
+    _lib.sibna_context_destroy.restype  = None
+
+    # Session
+    _lib.sibna_session_create.argtypes  = [ctypes.c_void_p, _P_u8, ctypes.c_size_t, _P_vp]
+    _lib.sibna_session_create.restype   = ctypes.c_int
+    _lib.sibna_session_destroy.argtypes = [ctypes.c_void_p]
+    _lib.sibna_session_destroy.restype  = None
+
+    # Crypto
+    _lib.sibna_generate_key.restype     = ctypes.c_int
+    _lib.sibna_random_bytes.restype     = ctypes.c_int
+    _lib.sibna_encrypt.restype          = ctypes.c_int
+    _lib.sibna_decrypt.restype          = ctypes.c_int
+    _lib.sibna_version.restype          = ctypes.c_int
+
+    # FIX: Identity functions — were missing entirely
+    _lib.sibna_identity_generate.argtypes = [_P_u8, _P_u8, _P_vp]
+    _lib.sibna_identity_generate.restype  = ctypes.c_int
+    _lib.sibna_identity_sign.restype      = ctypes.c_int
+    _lib.sibna_identity_verify.restype    = ctypes.c_int
+    _lib.sibna_identity_destroy.argtypes  = [ctypes.c_void_p]
+    _lib.sibna_identity_destroy.restype   = None
+
 
 class SibnaError(Exception):
     """Base exception for Sibna errors."""
@@ -150,10 +186,27 @@ class Context:
             _lib.sibna_context_destroy(self._ctx)
     
     def generate_identity(self) -> 'IdentityKeyPair':
-        """Generate a new identity key pair."""
-        # This would call into the native library
-        # For now, return a placeholder
-        return IdentityKeyPair()
+        """
+        Generate a new identity key pair via the native library.
+        FIX: Was returning an empty placeholder IdentityKeyPair() — an empty
+        identity has no keys and cannot sign or verify anything.
+        Now calls sibna_identity_generate() through the native library.
+        """
+        ed25519_pub = (ctypes.c_uint8 * 32)()
+        x25519_pub  = (ctypes.c_uint8 * 32)()
+        handle = ctypes.c_void_p()
+        result = _lib.sibna_identity_generate(
+            ctypes.cast(ed25519_pub, ctypes.POINTER(ctypes.c_uint8)),
+            ctypes.cast(x25519_pub,  ctypes.POINTER(ctypes.c_uint8)),
+            ctypes.byref(handle),
+        )
+        if result != 0:
+            raise SibnaError(result, f'sibna_identity_generate failed with code {result}')
+        return IdentityKeyPair(
+            ed25519_public  = bytes(ed25519_pub),
+            x25519_public   = bytes(x25519_pub),
+            _handle         = handle,
+        )
     
     def create_session(self, peer_id: bytes) -> 'Session':
         """Create a new session with a peer."""
@@ -187,25 +240,78 @@ class Context:
 
 class IdentityKeyPair:
     """Identity key pair for authentication."""
-    
-    def __init__(self):
-        self._public_key = None
-        self._private_key = None
-    
+
+    def __init__(self,
+                 ed25519_public: Optional[bytes] = None,
+                 x25519_public:  Optional[bytes] = None,
+                 _handle: Optional[ctypes.c_void_p] = None):
+        """
+        FIX: Old constructor accepted no arguments and stored None keys.
+        sign() raised NotImplementedError; verify() silently returned False.
+        Both are now wired to sibna_identity_sign / sibna_identity_verify via FFI.
+        """
+        self._ed25519_public = ed25519_public  # 32 bytes
+        self._x25519_public  = x25519_public   # 32 bytes
+        self._handle         = _handle
+
     @property
     def public_key(self) -> bytes:
-        """Get the public key."""
-        return self._public_key or b""
-    
+        """Ed25519 public key (32 bytes)."""
+        return self._ed25519_public or b""
+
+    @property
+    def x25519_public_key(self) -> bytes:
+        """X25519 public key (32 bytes) for DH operations."""
+        return self._x25519_public or b""
+
     def sign(self, data: bytes) -> bytes:
-        """Sign data with the identity key."""
-        # TODO: Call native library via FFI
-        raise NotImplementedError("Session encrypt requires compiled native library")
-    
+        """
+        Sign data with the Ed25519 identity key.
+        FIX: Was raising NotImplementedError — now calls sibna_identity_sign() via FFI.
+        Returns a 64-byte Ed25519 signature.
+        """
+        if self._handle is None:
+            raise SibnaError(0, 'IdentityKeyPair has no native handle — '
+                              'generate via SibnaContext.generate_identity()')
+        sig_buf = ByteBuffer()
+        result = _lib.sibna_identity_sign(
+            self._handle,
+            ctypes.cast(ctypes.c_char_p(data), ctypes.POINTER(ctypes.c_uint8)),
+            len(data),
+            ctypes.byref(sig_buf),
+        )
+        if result != 0:
+            raise SibnaError(result, f'sibna_identity_sign failed with code {result}')
+        signature = sig_buf.to_bytes()
+        _lib.sibna_free_buffer(ctypes.byref(sig_buf))
+        return signature
+
     def verify(self, data: bytes, signature: bytes) -> bool:
-        """Verify a signature."""
-        # Implementation would call native library
-        return False
+        """
+        Verify an Ed25519 signature.
+        FIX: Was silently returning False for ALL inputs — any signature passed
+        or failed arbitrarily, breaking authentication completely.
+        Now calls sibna_identity_verify() via FFI. Returns True on success.
+        """
+        if not self._ed25519_public or len(self._ed25519_public) != 32:
+            raise SibnaError(0, 'No Ed25519 public key loaded')
+        if len(signature) != 64:
+            return False
+        result = _lib.sibna_identity_verify(
+            ctypes.cast(ctypes.c_char_p(self._ed25519_public),
+                        ctypes.POINTER(ctypes.c_uint8)),
+            ctypes.cast(ctypes.c_char_p(data), ctypes.POINTER(ctypes.c_uint8)),
+            len(data),
+            ctypes.cast(ctypes.c_char_p(signature), ctypes.POINTER(ctypes.c_uint8)),
+        )
+        return result == 0
+
+    def __del__(self):
+        if self._handle is not None:
+            try:
+                _lib.sibna_identity_destroy(self._handle)
+            except Exception:
+                pass
 
 
 class Session:
