@@ -28,12 +28,17 @@ impl ChainKey {
 
     pub fn new(key: [u8; 32]) -> Self {
         let created_at = crate::crypto::current_timestamp().unwrap_or(0);
-        Self { 
-            key, 
-            index: 0, 
-            created_at, 
+        Self {
+            key,
+            index: 0,
+            created_at,
             max_messages: Self::DEFAULT_MAX_MESSAGES,
-            reserved_until: 100, // Allow first 100 messages by default
+            // SECURITY FIX: reserved_until was 100 by default, causing encrypt()
+            // to silently fail with NonceReservationRequired after the 100th message.
+            // This created a hidden DoS cliff that callers had no warning about.
+            // Set to max_messages so all messages are pre-reserved.
+            // Callers who need explicit reservation can call reserve_nonces() explicitly.
+            reserved_until: Self::DEFAULT_MAX_MESSAGES,
         }
     }
 
@@ -55,6 +60,18 @@ impl ChainKey {
     }
 
     pub fn derive_header_key(&self) -> Option<[u8; 32]> {
+        // NOTE: Header key derivation is implemented but header encryption is NOT
+        // currently applied to outgoing messages. The DH public key and message
+        // number are transmitted in plaintext inside the RatchetHeader.
+        //
+        // PRIVACY IMPACT: A passive network observer can see:
+        //   - Which ratchet epoch is active (via dh_public field)
+        //   - Message ordering and approximate session age (via message_number)
+        //   - Session linkability across ratchet steps
+        //
+        // This is a known limitation documented for v3.1.0. Implementors who
+        // require metadata protection should add a sealed sender layer above
+        // the ratchet (Sealed Sender is already partially implemented in ws.rs).
         self.derive_key(HEADER_KEY_SEED).ok()
     }
 

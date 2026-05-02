@@ -443,21 +443,45 @@ pub mod serde_helpers {
     use x25519_dalek::StaticSecret;
 
     /// Serde helper for Option<StaticSecret>
+    ///
+    /// SECURITY FIX: The X25519 private scalar MUST NEVER be written to disk.
+    /// The Double Ratchet's forward secrecy guarantee depends on old private keys
+    /// being irrecoverably deleted after each ratchet step. Serializing them to
+    /// disk destroys this guarantee — an attacker with the storage blob can
+    /// recover all past DH keys and decrypt all historical messages.
+    ///
+    /// Serialization policy:
+    ///   - serialize: always write `None` (the private scalar is ephemeral)
+    ///   - deserialize: always return `None` (caller must re-derive or re-generate)
+    ///
+    /// After deserialization, `dh_local` will be `None`. The session will
+    /// generate a fresh DH key pair on the next outgoing ratchet step.
+    /// In-flight messages that require the old private key are handled by the
+    /// skipped_message_keys cache (which stores derived message keys, not scalars).
     pub mod dh_local_serde {
         use super::*;
-        pub fn serialize<S>(secret: &Option<StaticSecret>, serializer: S) -> Result<S::Ok, S::Error>
+        pub fn serialize<S>(
+            _secret: &Option<StaticSecret>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
         {
-            secret.as_ref().map(|s| s.to_bytes()).serialize(serializer)
+            // CRITICAL: Always serialize as None.
+            // The private scalar is NEVER written to disk.
+            None::<[u8; 32]>.serialize(serializer)
         }
 
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<StaticSecret>, D::Error>
+        pub fn deserialize<'de, D>(
+            deserializer: D,
+        ) -> Result<Option<StaticSecret>, D::Error>
         where
             D: Deserializer<'de>,
         {
-            let opt_bytes: Option<[u8; 32]> = Option::deserialize(deserializer)?;
-            Ok(opt_bytes.map(StaticSecret::from))
+            // Discard whatever was stored (old blobs may contain the scalar).
+            // Always return None — the caller re-generates on next ratchet step.
+            let _: Option<[u8; 32]> = Option::deserialize(deserializer)?;
+            Ok(None)
         }
     }
 

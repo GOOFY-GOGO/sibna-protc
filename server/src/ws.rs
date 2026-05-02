@@ -217,11 +217,37 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
     state.db.tree_dedup.insert(dedup_key.as_bytes(), &ts_bytes).ok();
 
     // CRYPTO: Verify Ed25519 signature from the sender.
-    // The sender MUST sign: recipient_id || message_id || payload_hex (concatenated).
-    // This provides message authenticity and prevents sender spoofing.
+    // The sender MUST sign a canonical payload that unambiguously encodes all fields.
+    //
+    // SECURITY FIX: Old code used format!("{}{}{}", recipient_id, message_id, payload_hex)
+    // — simple concatenation without delimiters. This allows a field-boundary confusion
+    // attack: if recipient_id="AABB", message_id="CCDD" produces the same string as
+    // recipient_id="AABBCC", message_id="DD", an attacker can redirect a legitimate
+    // message to a different recipient using the original sender's valid signature.
+    //
+    // NEW FORMAT: Each field is length-prefixed (8-byte big-endian u64) before its value:
+    //   len(recipient_id_bytes) || recipient_id_bytes
+    //   len(message_id_bytes)   || message_id_bytes
+    //   len(payload_hex_bytes)  || payload_hex_bytes
+    //
+    // This makes field boundaries unambiguous and prevents any overlap attack.
     {
         use ed25519_dalek::{VerifyingKey, Signature, Verifier};
-        let signed_data = format!("{}{}{}", envelope.recipient_id, envelope.message_id, envelope.payload_hex);
+        use std::io::Write;
+
+        let mut canonical: Vec<u8> = Vec::with_capacity(
+            3 * 8 + envelope.recipient_id.len() + envelope.message_id.len() + envelope.payload_hex.len()
+        );
+        let r = envelope.recipient_id.as_bytes();
+        let m = envelope.message_id.as_bytes();
+        let p = envelope.payload_hex.as_bytes();
+        canonical.write_all(&(r.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(r).ok();
+        canonical.write_all(&(m.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(m).ok();
+        canonical.write_all(&(p.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(p).ok();
+
         let key_bytes = match hex::decode(sender_id) {
             Ok(b) if b.len() == 32 => b,
             _ => {
@@ -252,7 +278,7 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
             Err(_) => { return; }
         };
         let signature = Signature::from_bytes(&sig_arr);
-        if verifying_key.verify(signed_data.as_bytes(), &signature).is_err() {
+        if verifying_key.verify(&canonical, &signature).is_err() {
             warn!("WS_AUTH: signature verification failed from {}", sender_id.get(..16).unwrap_or(sender_id));
             return;
         }
@@ -350,7 +376,18 @@ async fn route_webrtc(state: &AppState, sender_id: &str, mut signal: WebRtcSigna
 
     {
         use ed25519_dalek::{VerifyingKey, Signature, Verifier};
-        let signed_data = format!("{}{}", signal.recipient_id, signal.payload_hex);
+        use std::io::Write;
+        // SECURITY FIX: Same canonical length-prefixed format as route_message.
+        let mut canonical: Vec<u8> = Vec::with_capacity(
+            2 * 8 + signal.recipient_id.len() + signal.payload_hex.len()
+        );
+        let r = signal.recipient_id.as_bytes();
+        let p = signal.payload_hex.as_bytes();
+        canonical.write_all(&(r.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(r).ok();
+        canonical.write_all(&(p.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(p).ok();
+
         let key_bytes = match hex::decode(sender_id) {
             Ok(b) if b.len() == 32 => b,
             _ => return,
@@ -372,7 +409,7 @@ async fn route_webrtc(state: &AppState, sender_id: &str, mut signal: WebRtcSigna
             Err(_) => return,
         };
         let signature = Signature::from_bytes(&sig_arr);
-        if verifying_key.verify(signed_data.as_bytes(), &signature).is_err() {
+        if verifying_key.verify(&canonical, &signature).is_err() {
             warn!("WS_WEBRTC: signature verification failed from {}", sender_id.get(..16).unwrap_or(sender_id));
             return;
         }

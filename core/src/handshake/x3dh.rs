@@ -140,13 +140,30 @@ pub fn x3dh_initiator_v3(
     }
     hasher.update(our_device_id);
     hasher.update(peer_device_id);
-    let mut transcript_hash: [u8; 32] = hasher.finalize().into();
+    let transcript_hash: [u8; 32] = hasher.finalize().into();
 
-    // BIND EXTERNAL TRANSCRIPT (Hardened v3.0.0):
-    // Combine the X3DH transcript with the P2P handshake transcript.
-    for (i, byte) in transcript_hash.iter_mut().enumerate() {
-        *byte ^= transcript_hash_ext[i];
-    }
+    // FIX: Replace XOR-based external transcript binding with HKDF-based combining.
+    //
+    // OLD CODE: for i in 0..32 { transcript_hash[i] ^= transcript_hash_ext[i]; }
+    // PROBLEM:  XOR with transcript_hash_ext = [0u8; 32] (the default for non-P2P flows)
+    //           is an identity operation — it provides ZERO additional binding.
+    //           Even with a non-zero ext, XOR is not a secure combining function
+    //           (it is not PRF-secure; if either input is weak, the output is weak).
+    //
+    // NEW: HKDF-Extract(salt=transcript_hash_ext, ikm=transcript_hash)
+    //      When ext=[0u8;32], this is HKDF-Extract(salt=0^32, ikm=internal_hash),
+    //      which is still a secure PRF operation — the output is indistinguishable
+    //      from random given a secure internal hash. When ext is non-zero (P2P flow),
+    //      it provides genuine transcript binding.
+    let combined_transcript: [u8; 32] = {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(Some(transcript_hash_ext), &transcript_hash);
+        let mut out = [0u8; 32];
+        hk.expand(b"SibnaX3DH_TranscriptBind_v3", &mut out)
+            .expect("HKDF expand 32 bytes always succeeds");
+        out
+    };
 
     // Derive shared secret
     #[cfg(not(feature = "pqc"))]
@@ -155,7 +172,7 @@ pub fn x3dh_initiator_v3(
         dh2.as_bytes(),
         dh3.as_bytes(),
         dh4.as_ref().map(|d| d.as_bytes()),
-        &transcript_hash,
+        &combined_transcript, // FIX: use HKDF-combined transcript
     )?;
 
     #[cfg(feature = "pqc")]
@@ -265,13 +282,18 @@ pub fn x3dh_responder_v3(
     }
     hasher.update(our_device_id);
     hasher.update(peer_device_id);
-    let mut transcript_hash: [u8; 32] = hasher.finalize().into();
+    let transcript_hash: [u8; 32] = hasher.finalize().into();
 
-    // BIND EXTERNAL TRANSCRIPT (Hardened v3.0.0):
-    // Combine the X3DH transcript with the P2P handshake transcript.
-    for (i, byte) in transcript_hash.iter_mut().enumerate() {
-        *byte ^= transcript_hash_ext[i];
-    }
+    // FIX: HKDF-based transcript binding (same as initiator — see x3dh_initiator_v3)
+    let combined_transcript: [u8; 32] = {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(Some(transcript_hash_ext), &transcript_hash);
+        let mut out = [0u8; 32];
+        hk.expand(b"SibnaX3DH_TranscriptBind_v3", &mut out)
+            .expect("HKDF expand 32 bytes always succeeds");
+        out
+    };
 
     // Derive shared secret
     #[cfg(not(feature = "pqc"))]
@@ -280,7 +302,7 @@ pub fn x3dh_responder_v3(
         dh2.as_bytes(),
         dh3.as_bytes(),
         dh4.as_ref().map(|d| d.as_bytes()),
-        &transcript_hash,
+        &combined_transcript, // FIX: use HKDF-combined transcript
     )?;
 
     #[cfg(feature = "pqc")]

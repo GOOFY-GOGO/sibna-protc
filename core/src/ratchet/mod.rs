@@ -110,8 +110,16 @@ impl RatchetHeader {
             return Err(ProtocolError::InvalidMessage);
         }
 
-        // Reject messages older than 24 hours
-        if self.timestamp > 0 && now > self.timestamp + 86400 {
+        // FIX: Remove the "self.timestamp > 0 &&" guard.
+        // The old condition allowed any message with timestamp=0 to bypass the
+        // 24-hour age check — an attacker who captures a message and zeroes the
+        // timestamp field (which is unauthenticated at this point) would pass
+        // this check. Although the subsequent AEAD would detect the tampering,
+        // the inconsistency between the documented policy and implementation
+        // creates a confusing trust boundary.
+        // A timestamp of exactly 0 (Jan 1 1970 00:00:00 UTC) is more than 24 hours
+        // in the past for any real deployment — reject it unconditionally.
+        if now > self.timestamp.saturating_add(86400) {
             return Err(ProtocolError::MessageTooOld);
         }
 

@@ -75,11 +75,27 @@ pub struct P2pConfig {
     ///
     /// Set to `Some("127.0.0.1:9050")` to route all outgoing connections
     /// through a local Tor daemon.
-    ///
-    /// **Requires Tor to be running on the specified address.**
-    /// When set, DNS resolution is also performed by the proxy,
-    /// preventing DNS leaks.
     pub proxy: Option<String>,
+
+    /// SECURITY FIX: Expected peer Ed25519 identity key (32 bytes).
+    ///
+    /// When `Some`, the P2P handshake REJECTS any peer whose Ed25519 public key
+    /// does not match this value. This prevents the following attack:
+    ///
+    /// Without this field, an active MITM between Alice and Bob can:
+    ///   1. Intercept Alice's Hello message
+    ///   2. Present their own PreKeyBundle (with MITM keys) to Alice
+    ///   3. Alice runs X3DH with MITM keys → MITM can decrypt all traffic
+    ///
+    /// When `expected_peer_identity` is set, step 2 fails because the MITM's
+    /// Ed25519 key does not match the expected value that Alice obtained
+    /// out-of-band (e.g. via QR code, safety number comparison, or directory).
+    ///
+    /// PRODUCTION REQUIREMENT: Always set this when dialling a known peer.
+    /// Leave `None` only for anonymous peer discovery (mDNS) where the peer
+    /// identity is unknown in advance — in that case, verify safety numbers
+    /// interactively after connection.
+    pub expected_peer_identity: Option<[u8; 32]>,
 }
 
 impl Default for P2pConfig {
@@ -88,10 +104,11 @@ impl Default for P2pConfig {
             bind_addr: "0.0.0.0:0".parse().expect("static literal addr is always valid"),
             handshake_timeout_secs: 30,
             max_peers: 256,
-            max_message_size: 10 * 1024 * 1024, // 10 MB
+            max_message_size: 10 * 1024 * 1024,
             enable_mdns: false,
             node_name: None,
-            proxy: None, // direct connection by default; set to Some("127.0.0.1:9050") for Tor
+            proxy: None,
+            expected_peer_identity: None, // Must be set for production peer-to-peer connections
         }
     }
 }

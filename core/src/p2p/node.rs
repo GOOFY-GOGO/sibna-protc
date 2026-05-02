@@ -134,6 +134,7 @@ impl P2pNode {
         let hs_cfg = P2pHandshakeConfig {
             timeout_secs: config.handshake_timeout_secs,
             max_frame_bytes: config.max_message_size,
+            expected_peer_identity: config.expected_peer_identity,
         };
 
         // Initialize NAT traversal if enabled

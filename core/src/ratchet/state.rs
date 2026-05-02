@@ -162,10 +162,13 @@ impl DoubleRatchetState {
         self.skipped_message_keys.clear();
     }
 
-    /// Set local DH key pair
     pub fn set_local_dh(&mut self, secret: StaticSecret) {
+        // SECURITY FIX: dh_local_bytes must store the PUBLIC key only.
+        // Old code stored the raw StaticSecret bytes (the private scalar) here,
+        // which then persisted to disk and destroyed forward secrecy.
+        // Now we derive and store only the corresponding public key.
         let public = PublicKey::from(&secret);
-        self.dh_local_bytes = public.as_bytes().to_vec();
+        self.dh_local_bytes = public.as_bytes().to_vec(); // PUBLIC only
         self.dh_local = Some(secret);
     }
 
@@ -175,19 +178,18 @@ impl DoubleRatchetState {
         self.dh_remote = Some(public);
     }
 
-    /// Restore DH keys from serialized bytes.
+    /// Restore DH keys after deserialization.
     ///
-    /// # Security note
-    /// `dh_local_bytes` contains the LOCAL **public** key only — the private
-    /// scalar is NEVER written to disk.  After deserialization `dh_local`
-    /// (the `StaticSecret`) will be `None`; the next DH ratchet step will
-    /// generate a fresh ephemeral key pair automatically.
+    /// After a save/load cycle:
+    /// - `dh_local` is always `None` (private scalar is never persisted — see dh_local_serde)
+    /// - `dh_local_bytes` contains the last-known LOCAL PUBLIC key (for header reconstruction)
+    /// - `dh_remote` must be restored from `dh_remote_bytes`
+    ///
+    /// The next outgoing ratchet step will generate a fresh `dh_local` automatically.
+    /// Sessions that were mid-ratchet when saved will re-ratchet on the next send,
+    /// which is safe and correct per the Double Ratchet specification.
     pub fn restore_dh_keys(&mut self) -> Result<(), &'static str> {
-        // V3 FIX: We now properly serialize dh_local via dh_local_serde.
-        // No manual restoration needed here anymore, but we keep the logic
-        // consistent for the remote public key.
-
-        // Restore remote public key (correct — dh_remote_bytes really are public)
+        // Restore remote public key from serialized bytes
         if let Some(ref bytes) = self.dh_remote_bytes {
             let arr: [u8; 32] = bytes
                 .as_slice()
@@ -195,7 +197,8 @@ impl DoubleRatchetState {
                 .map_err(|_| "Invalid remote DH bytes length")?;
             self.dh_remote = Some(PublicKey::from(arr));
         }
-
+        // dh_local remains None — private scalar is ephemeral and not persisted.
+        // The next dh_ratchet() call generates a fresh key pair automatically.
         Ok(())
     }
 

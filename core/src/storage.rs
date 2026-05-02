@@ -8,6 +8,7 @@ use crate::keystore::KeyStore;
 use crate::SessionManager;
 use crate::group::GroupManager;
 use serde::{Serialize, Deserialize};
+use subtle::ConstantTimeEq;
 
 
 /// Unified storage payload
@@ -28,11 +29,28 @@ pub struct StoragePayload {
 }
 
 /// Storage Manifest - sidecar file for rollback protection (v3.0.0)
+///
+/// SECURITY NOTE: The manifest is authenticated with HMAC-SHA256 keyed
+/// by the storage encryption key. This prevents an attacker who has
+/// filesystem write access from replacing BOTH the blob AND the manifest
+/// with an older consistent pair (which would bypass rollback detection).
+///
+/// With HMAC: to replace the manifest, the attacker must know the encryption key.
+/// If they know the encryption key, they can decrypt the blob anyway — so the
+/// manifest's rollback protection is meaningful only against attackers who
+/// can write files but cannot derive the key.
+///
+/// KNOWN LIMITATION: If an attacker has full filesystem access AND can observe
+/// the key derivation (e.g. via cold boot attack), rollback protection fails.
+/// This is a fundamental limitation of software-only storage.
 #[derive(Serialize, Deserialize)]
 pub struct StorageManifest {
     pub version: u32,
     pub sequence_number: u64,
     pub blob_hash: [u8; 32],
+    /// HMAC-SHA256(version || sequence_number || blob_hash, key=encryption_key)
+    /// Prevents filesystem-level manifest replacement without knowledge of the key.
+    pub manifest_mac: [u8; 32],
 }
 
 /// Unified secure storage handler
@@ -106,15 +124,29 @@ impl SecureStorage {
             .map_err(|_| ProtocolError::StorageError)?;
         drop(file);
 
-        // 4. Save Manifest (v3.0.0)
+        // 4. Save Manifest with HMAC authentication (v3.0.1)
         let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
         sha2::Digest::update(&mut hasher, &encrypted);
         let blob_hash: [u8; 32] = sha2::Digest::finalize(hasher).into();
-        
+
+        // Compute HMAC-SHA256 over (version || sequence_number || blob_hash)
+        // keyed by the encryption key — prevents manifest replacement attack.
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac_input = Vec::with_capacity(4 + 8 + 32);
+        mac_input.extend_from_slice(&payload.version.to_le_bytes());
+        mac_input.extend_from_slice(&payload.sequence_number.to_le_bytes());
+        mac_input.extend_from_slice(&blob_hash);
+        let mut hmac = <Hmac<Sha256>>::new_from_slice(encryption_key)
+            .expect("HMAC accepts any key length");
+        hmac.update(&mac_input);
+        let manifest_mac: [u8; 32] = hmac.finalize().into_bytes().into();
+
         let manifest = StorageManifest {
             version: payload.version,
             sequence_number: payload.sequence_number,
             blob_hash,
+            manifest_mac,
         };
         let manifest_bytes = bincode::encode_to_vec(&manifest, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)?;
@@ -172,14 +204,40 @@ impl SecureStorage {
         let handler = CryptoHandler::new(encryption_key)
             .map_err(|_| ProtocolError::InternalError)?;
         
-        // 3. Verify Manifest Hash (Splicing Protection) - v3.0.0
+        // 3. Verify Manifest HMAC and Hash (v3.0.1)
         if let Some(ref m) = manifest {
+            // First: verify the manifest's own HMAC to prevent manifest replacement
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
+            use subtle::ConstantTimeEq;
+            let mut mac_input = Vec::with_capacity(4 + 8 + 32);
+            mac_input.extend_from_slice(&m.version.to_le_bytes());
+            mac_input.extend_from_slice(&m.sequence_number.to_le_bytes());
+            mac_input.extend_from_slice(&m.blob_hash);
+            let mut hmac = <Hmac<Sha256>>::new_from_slice(encryption_key)
+                .expect("HMAC accepts any key length");
+            hmac.update(&mac_input);
+            let expected_mac: [u8; 32] = hmac.finalize().into_bytes().into();
+
+            if m.manifest_mac.ct_eq(&expected_mac).unwrap_u8() == 0 {
+                // Manifest MAC mismatch: either the manifest was replaced (rollback attack)
+                // or it was created by an older version without HMAC.
+                // Reject to protect against rollback. Users with old manifests
+                // must delete the manifest file and re-save (losing rollback protection for one save).
+                tracing::error!(
+                    "StorageManifest HMAC verification failed — possible rollback attack or manifest from v3.0.0. \
+                     Delete the .manifest file to bypass (you lose rollback protection for this session)."
+                );
+                return Err(ProtocolError::StorageError);
+            }
+
+            // Then: verify blob hash matches manifest
             let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
             sha2::Digest::update(&mut hasher, &encrypted);
             let actual_hash: [u8; 32] = sha2::Digest::finalize(hasher).into();
-            
+
             if m.blob_hash != actual_hash {
-                return Err(ProtocolError::StorageError); // Splicing detected
+                return Err(ProtocolError::StorageError); // Blob tampered
             }
         }
 

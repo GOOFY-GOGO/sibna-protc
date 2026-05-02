@@ -42,6 +42,8 @@ pub struct P2pHandshakeConfig {
     pub timeout_secs: u64,
     /// Max frame bytes — must match transport
     pub max_frame_bytes: usize,
+    /// Expected peer Ed25519 identity (from P2pConfig). None = warn-only mode.
+    pub expected_peer_identity: Option<[u8; 32]>,
 }
 
 impl Default for P2pHandshakeConfig {
@@ -49,6 +51,7 @@ impl Default for P2pHandshakeConfig {
         Self {
             timeout_secs: 30,
             max_frame_bytes: 10 * 1024 * 1024,
+            expected_peer_identity: None,
         }
     }
 }
@@ -197,6 +200,27 @@ pub async fn initiator_handshake(
             .map_err(|e| P2pError::Handshake(format!("malformed internal bundle: {:?}", e)))?;
         bundle.validate()
             .map_err(|e| P2pError::Handshake(format!("bundle validation: {:?}", e)))?;
+
+        // SECURITY FIX: Verify responder identity against the expected key.
+        // Without this check, an active MITM can substitute their own bundle and
+        // intercept the X3DH shared secret. The caller must set
+        // P2pConfig::expected_peer_identity to the peer's known Ed25519 key.
+        // If no expected identity is configured, emit a warning — in production
+        // this should be treated as an error.
+        if let Some(ref expected) = handshake_cfg.expected_peer_identity {
+            if stealth_bundle.responder_ed25519_pub != *expected {
+                return Err(P2pError::Handshake(format!(
+                    "MITM DETECTED: expected peer identity {:?}, got {:?}",
+                    &expected[..4], &stealth_bundle.responder_ed25519_pub[..4]
+                )));
+            }
+        } else {
+            tracing::warn!(
+                "P2P initiator: no expected_peer_identity configured. \
+                 MITM protection is DISABLED for this connection. \
+                 Verify safety numbers out-of-band after connection."
+            );
+        }
 
         // ── Transcript Binding (v3.0.0) ──────────────────────────────────
         let mut hasher = blake3::Hasher::new();

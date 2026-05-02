@@ -42,6 +42,9 @@ impl DoubleRatchetSession {
         let mut dh_local_bytes = [0u8; 32];
         rng.fill_bytes(&mut dh_local_bytes);
         let dh_local = StaticSecret::from(dh_local_bytes);
+        // SECURITY FIX: store PUBLIC key, not the private scalar
+        let dh_public_bytes = PublicKey::from(&dh_local).as_bytes().to_vec();
+        dh_local_bytes.zeroize(); // Wipe private scalar temp buffer immediately
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| ProtocolError::InternalError)?
@@ -52,7 +55,7 @@ impl DoubleRatchetSession {
             sending_chain: None,
             receiving_chain: None,
             dh_local: Some(dh_local),
-            dh_local_bytes: dh_local_bytes.to_vec(),
+            dh_local_bytes: dh_public_bytes, // PUBLIC only — see SECURITY FIX above
             dh_remote: None,
             dh_remote_bytes: None,
             skipped_message_keys: HashMap::new(),
@@ -109,7 +112,8 @@ impl DoubleRatchetSession {
             (None, Some(ChainKey::new(chain_key)))
         };
 
-        let dh_local_bytes = local_dh.to_bytes().to_vec();
+        // SECURITY FIX: dh_local_bytes stores the PUBLIC key only
+        let dh_local_bytes = PublicKey::from(&local_dh).as_bytes().to_vec();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| ProtocolError::InternalError)?

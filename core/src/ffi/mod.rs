@@ -685,17 +685,29 @@ pub extern "C" fn sibna_perform_handshake(
     }
 
     let is_initiator = initiator != 0;
+    let role = if is_initiator {
+        crate::handshake::HandshakeRole::Initiator
+    } else {
+        crate::handshake::HandshakeRole::Responder
+    };
 
     let peer_ik: Option<&[u8]> = Some(&bundle.identity_key);
     let peer_spk: Option<&[u8]> = Some(&bundle.signed_prekey);
     let peer_opk: Option<&[u8]> = bundle.onetime_prekey.as_ref().map(|k| k.as_ref());
 
+    // FIX: Extract the Ed25519 signature on the signed prekey from the validated bundle.
+    // bundle.validate() already checked this signature above, but we pass it explicitly
+    // to perform_handshake so the core verifies it independently as well.
+    let spk_sig: Option<[u8; 64]> = Some(bundle.signature);
+
     match ctx.perform_handshake(
         peer_id_slice,
-        is_initiator,
+        role,
         peer_ik,
         peer_spk,
+        spk_sig.as_ref(),
         peer_opk,
+        None,
         None,
     ) {
         Ok(_) => SibnaResult::Ok,

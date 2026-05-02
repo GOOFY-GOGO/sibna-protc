@@ -477,6 +477,17 @@ impl SecureContext {
     }
 
     /// Perform X3DH handshake with a peer
+    ///
+    /// # Parameters
+    /// - `peer_spk_signature`: The 64-byte Ed25519 signature covering the peer's signed prekey.
+    ///   This is required for the initiator role to authenticate the SPK against the peer's
+    ///   identity key. Pass `None` only for testing or when operating in non-strict mode.
+    ///
+    /// # API Note (responder path)
+    /// When `role == Responder`, the `peer_onetime_prekey` parameter carries the
+    /// initiator's **ephemeral public key** (not their OPK). This parameter reuse is
+    /// intentional for the current API version and is documented here to prevent misuse.
+    /// A cleaner separation will be introduced in v3.1.0.
     #[allow(clippy::too_many_arguments)]
     pub fn perform_handshake(
         &self,
@@ -484,6 +495,7 @@ impl SecureContext {
         role: HandshakeRole,
         peer_identity_key: Option<&[u8]>,
         peer_signed_prekey: Option<&[u8]>,
+        peer_spk_signature: Option<&[u8; 64]>, // FIX: dedicated SPK signature parameter
         peer_onetime_prekey: Option<&[u8]>,
         peer_device_id: Option<[u8; 16]>,
         prologue: Option<&[u8]>,
@@ -512,6 +524,51 @@ impl SecureContext {
             .with_random(&*random)
             .with_role(role)
             .with_our_device_id(self.device_id);
+
+        // FIX: Verify the Ed25519 signature on the peer's signed prekey BEFORE
+        // using it in the X3DH computation. Without this check, a MITM can substitute
+        // an arbitrary signed prekey (for which they have the private key) and derive
+        // the same shared secret as the victim — breaking authentication silently.
+        // The signature binds the SPK to the peer's Ed25519 identity key.
+        if role.is_initiator() {
+            if let (Some(peer_ik), Some(peer_spk)) = (peer_identity_key, peer_signed_prekey) {
+                if peer_ik.len() != 32 || peer_spk.len() != 32 {
+                    return Err(ProtocolError::InvalidKeyLength);
+                }
+                // The signed prekey signature covers: b"SibnaSignedPreKey_v3" || spk_bytes
+                // This domain-separation prefix must match what keystore::SignedPreKey::generate() signs.
+                let mut signed_payload = Vec::with_capacity(20 + 32);
+                signed_payload.extend_from_slice(b"SibnaSignedPreKey_v3");
+                signed_payload.extend_from_slice(peer_spk);
+
+                use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+                let vk = VerifyingKey::from_bytes(
+                    peer_ik.try_into().map_err(|_| ProtocolError::InvalidKeyLength)?
+                ).map_err(|_| ProtocolError::InvalidKey)?;
+
+                // FIX: Use dedicated peer_spk_signature parameter instead of
+                // piggybacking on prologue (which was an API misuse).
+                let spk_sig_bytes: Option<[u8; 64]> = peer_spk_signature.copied();
+
+                if let Some(sig_bytes) = spk_sig_bytes {
+                    let sig = Signature::from_bytes(&sig_bytes);
+                    vk.verify(&signed_payload, &sig)
+                        .map_err(|_| ProtocolError::InvalidSignature)?;
+                } else if self.config.require_safety_numbers {
+                    // In strict mode: reject handshakes where we cannot verify the SPK signature
+                    return Err(ProtocolError::HandshakeFailed);
+                }
+                // In non-strict mode without SPK signature: proceed but log a warning
+                // (allows interoperability with older clients during migration)
+                #[cfg(not(test))]
+                if spk_sig_bytes.is_none() {
+                    tracing::warn!(
+                        "perform_handshake: proceeding without SPK signature verification. \
+                         Pass signature in first 64 bytes of prologue for full authentication."
+                    );
+                }
+            }
+        }
 
         if let Some(pk) = peer_identity_key {
             builder = builder.with_peer_identity_key(pk)?;

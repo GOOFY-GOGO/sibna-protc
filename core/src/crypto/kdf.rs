@@ -76,13 +76,20 @@ impl HkdfKdf {
             .collect()
     }
 
-    /// Derive a key with iterations (for password-based KDF)
+    /// Derive a key with chained HKDF (for non-password key stretching only).
     ///
-    /// # Arguments
-    /// * `ikm` - Input keying material
-    /// * `salt` - Salt
-    /// * `info` - Context information
-    /// * `iterations` - Number of iterations
+    /// # ⚠️ SECURITY WARNING — NOT for password-based KDF
+    ///
+    /// This function chains HKDF `iterations` times. It does NOT provide
+    /// brute-force resistance for password inputs. HKDF is a fast PRF —
+    /// 10,000 iterations take microseconds, not seconds.
+    ///
+    /// For password-based key derivation, use `Argon2Kdf::derive_default()`.
+    /// This function is appropriate only for key diversification when the
+    /// input material is already a uniformly random secret (e.g. a session key).
+    ///
+    /// Using this with `iterations > 1` on a password input provides
+    /// NO meaningful additional protection against offline attacks.
     pub fn derive_iterated(
         ikm: &[u8],
         salt: &[u8],
