@@ -77,24 +77,11 @@ pub struct P2pConfig {
     /// through a local Tor daemon.
     pub proxy: Option<String>,
 
-    /// SECURITY FIX: Expected peer Ed25519 identity key (32 bytes).
+    /// Expected peer Ed25519 identity key (32 bytes).
     ///
-    /// When `Some`, the P2P handshake REJECTS any peer whose Ed25519 public key
-    /// does not match this value. This prevents the following attack:
-    ///
-    /// Without this field, an active MITM between Alice and Bob can:
-    ///   1. Intercept Alice's Hello message
-    ///   2. Present their own PreKeyBundle (with MITM keys) to Alice
-    ///   3. Alice runs X3DH with MITM keys → MITM can decrypt all traffic
-    ///
-    /// When `expected_peer_identity` is set, step 2 fails because the MITM's
-    /// Ed25519 key does not match the expected value that Alice obtained
-    /// out-of-band (e.g. via QR code, safety number comparison, or directory).
-    ///
-    /// PRODUCTION REQUIREMENT: Always set this when dialling a known peer.
-    /// Leave `None` only for anonymous peer discovery (mDNS) where the peer
-    /// identity is unknown in advance — in that case, verify safety numbers
-    /// interactively after connection.
+    /// When set, the handshake rejects any peer whose key does not match.
+    /// Obtain this value out-of-band (QR code, safety numbers, directory).
+    /// Leave `None` only for anonymous mDNS discovery; verify safety numbers afterward.
     pub expected_peer_identity: Option<[u8; 32]>,
 }
 
@@ -108,7 +95,7 @@ impl Default for P2pConfig {
             enable_mdns: false,
             node_name: None,
             proxy: None,
-            expected_peer_identity: None, // Must be set for production peer-to-peer connections
+            expected_peer_identity: None,
         }
     }
 }

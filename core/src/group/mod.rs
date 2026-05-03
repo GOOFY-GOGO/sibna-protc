@@ -107,7 +107,7 @@ impl SenderKey {
         // Securely update chain key
         self.chain_key.zeroize();
         self.chain_key = next_chain.to_vec();
-        // SECURITY FIX §4.2: u32 overflows after ~4 billion messages, causing key reuse.
+        // : u32 overflows after ~4 billion messages, causing key reuse.
         // Use checked_add and return an error rather than wrapping silently.
         self.message_number = self.message_number
             .checked_add(1)
@@ -233,7 +233,7 @@ pub struct GroupSession {
     /// Maximum group size
     pub max_size: usize,
     /// Our Ed25519 signing key (32-byte seed) for message authentication.
-    /// FIX: Required to sign outgoing group messages and prevent impersonation.
+    /// Required to sign outgoing group messages and prevent impersonation.
     pub our_signing_key: Option<[u8; 32]>,
 }
 
@@ -296,7 +296,7 @@ impl GroupSession {
         self.sender_keys.remove(public_key);
         self.epoch += 1;
         
-        // V4 FIX: Immediate key rotation on member removal.
+        // Immediate key rotation on member removal.
         // This is critical for "Future Secrecy" within the group context.
         // A removed member must NOT be able to decrypt future messages.
         if let Some(ref mut sk) = self.our_sender_key {
@@ -370,8 +370,8 @@ impl GroupSession {
             return Err(ProtocolError::InvalidMessage);
         }
 
-        // FIX: Verify sender's Ed25519 signature before deriving any keys.
-        // Without this, any peer with a valid sender_key_id can forge messages.
+        // Verify sender's Ed25519 signature before deriving any keys.
+        // any peer with a valid sender_key_id can forge messages.
         if !message.sender_signature.is_empty() {
             use ed25519_dalek::{VerifyingKey, Signature, Verifier};
             let vk = VerifyingKey::from_bytes(sender_public_key)
@@ -396,8 +396,8 @@ impl GroupSession {
             return Err(ProtocolError::InvalidMessage);
         }
 
-        // FIX: Bound the number of skipped messages to prevent DoS.
-        // An attacker sending message_number=2^32-1 would exhaust CPU.
+        // Bound the number of skipped messages to prevent DoS.
+        // Prevent u32 overflow on pathological input.
         const MAX_SKIP_GROUP: u32 = 500;
         if message.message_number > sender_key.message_number + MAX_SKIP_GROUP {
             return Err(ProtocolError::MaxSkippedMessagesExceeded);
@@ -425,8 +425,8 @@ impl GroupSession {
             return Err(ProtocolError::Expired);
         }
 
-        // SECURITY FIX §5.2: Epoch rollback protection.
-        // An attacker could replay an old SenderKeyDistributionMessage with a lower
+        // : Epoch rollback protection.
+        //  replay an old SenderKeyDistributionMessage with a lower
         // key_id to force a weaker or reused key. Reject any imported key whose key_id
         // is less than or equal to the currently stored key_id for this sender.
         if let Some(existing) = self.sender_keys.get(&public_key) {
@@ -505,7 +505,7 @@ pub struct GroupMessage {
     /// Timestamp
     pub timestamp: u64,
     /// Ed25519 signature over signable_bytes() by the sender's identity key.
-    /// FIX: Added to prevent sender impersonation — any group member (or a
+    /// Added to prevent sender impersonation — any group member (or a
     /// compromised server) could forge messages without this signature.
     #[serde(with = "serde_bytes")]
     pub sender_signature: Vec<u8>,

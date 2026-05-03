@@ -43,7 +43,7 @@ impl IdentityKeyPair {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_else(|e| {
-                // SECURITY FIX §2.2: clock regression must not silently produce timestamp=0,
+                // : clock regression must not silently produce timestamp=0,
                 // which bypasses replay protection. Log and use a safe sentinel value.
                 tracing::error!("SystemTime before UNIX_EPOCH (clock regression?): {:?}", e);
                 // Use u64::MAX as sentinel — treated as "very far in the future",
@@ -86,7 +86,7 @@ impl IdentityKeyPair {
             .try_into()
             .map_err(|_| ProtocolError::InvalidKeyLength)?;
 
-        // FIX: Use HKDF with distinct info tags to derive separate key material
+        // Use HKDF with distinct info tags to derive separate key material
         // for Ed25519 and X25519. Reusing the raw seed for both leaks cross-domain
         // key material and violates cryptographic separation.
         let hkdf = Hkdf::<Sha256>::new(None, &seed_arr);
@@ -105,7 +105,7 @@ impl IdentityKeyPair {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_else(|e| {
-                // SECURITY FIX §2.2: clock regression must not silently produce timestamp=0,
+                // : clock regression must not silently produce timestamp=0,
                 // which bypasses replay protection. Log and use a safe sentinel value.
                 tracing::error!("SystemTime before UNIX_EPOCH (clock regression?): {:?}", e);
                 // Use u64::MAX as sentinel — treated as "very far in the future",
@@ -145,11 +145,10 @@ impl IdentityKeyPair {
 
         let sig = Signature::from_bytes(signature);
 
-        // SECURITY FIX §4.4: Return Err on signature failure rather than Ok(false).
+        // : Return Err on signature failure rather than Ok(false).
         // Ok(false) is a "soft" failure that callers can silently ignore (missing
         // match arm, ? operator skipping, etc.). Err forces explicit handling.
-        // Callers that previously checked `if !keypair.verify(...)` should now use:
-        //   keypair.verify(...)?;  // propagates on failure
+        // Callers: use `keypair.verify(...)?` — the error propagates on failure.
         verifying_key.verify(data, &sig)
             .map(|_| true)
             .map_err(|_| ProtocolError::InvalidSignature)
@@ -257,7 +256,7 @@ impl SignedPreKey {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_else(|e| {
-                // SECURITY FIX §2.2: clock regression must not silently produce timestamp=0,
+                // : clock regression must not silently produce timestamp=0,
                 // which bypasses replay protection. Log and use a safe sentinel value.
                 tracing::error!("SystemTime before UNIX_EPOCH (clock regression?): {:?}", e);
                 // Use u64::MAX as sentinel — treated as "very far in the future",
@@ -338,7 +337,7 @@ impl OneTimePreKey {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_else(|e| {
-                // SECURITY FIX §2.2: clock regression must not silently produce timestamp=0,
+                // : clock regression must not silently produce timestamp=0,
                 // which bypasses replay protection. Log and use a safe sentinel value.
                 tracing::error!("SystemTime before UNIX_EPOCH (clock regression?): {:?}", e);
                 // Use u64::MAX as sentinel — treated as "very far in the future",
@@ -579,7 +578,7 @@ impl KeyStore {
     }
 
     /// Get the combined data required to build a PreKey bundle.
-    /// 
+    ///
     /// Returns (identity_public, signed_prekey_public, signed_prekey_signature, onetime_prekey_public).
     pub fn get_prekey_bundle_data(&self) -> ProtocolResult<([u8; 32], [u8; 32], [u8; 64], Option<[u8; 32]>)> {
         let identity = self.get_identity_keypair()?;
@@ -999,7 +998,7 @@ mod tests {
         let signature = keypair.sign(data).unwrap();
         
         assert!(keypair.verify(data, &signature).unwrap());
-        // SECURITY FIX §4.4: verify() now returns Err on bad signature, not Ok(false)
+        // : verify() now returns Err on bad signature, not Ok(false)
         assert!(keypair.verify(b"wrong data", &signature).is_err());
     }
 

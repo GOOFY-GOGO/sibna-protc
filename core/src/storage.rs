@@ -28,28 +28,17 @@ pub struct StoragePayload {
     pub last_save: u64,
 }
 
-/// Storage Manifest - sidecar file for rollback protection (v3.0.0)
+/// Sidecar file written alongside the encrypted blob.
 ///
-/// SECURITY NOTE: The manifest is authenticated with HMAC-SHA256 keyed
-/// by the storage encryption key. This prevents an attacker who has
-/// filesystem write access from replacing BOTH the blob AND the manifest
-/// with an older consistent pair (which would bypass rollback detection).
-///
-/// With HMAC: to replace the manifest, the attacker must know the encryption key.
-/// If they know the encryption key, they can decrypt the blob anyway — so the
-/// manifest's rollback protection is meaningful only against attackers who
-/// can write files but cannot derive the key.
-///
-/// KNOWN LIMITATION: If an attacker has full filesystem access AND can observe
-/// the key derivation (e.g. via cold boot attack), rollback protection fails.
-/// This is a fundamental limitation of software-only storage.
+/// `manifest_mac` is HMAC-SHA256(version || sequence_number || blob_hash)
+/// keyed by the storage encryption key. This stops an attacker with filesystem
+/// write access from rolling back to an older blob+manifest pair without knowing
+/// the key. It does not protect against attackers who can also read the key.
 #[derive(Serialize, Deserialize)]
 pub struct StorageManifest {
     pub version: u32,
     pub sequence_number: u64,
     pub blob_hash: [u8; 32],
-    /// HMAC-SHA256(version || sequence_number || blob_hash, key=encryption_key)
-    /// Prevents filesystem-level manifest replacement without knowledge of the key.
     pub manifest_mac: [u8; 32],
 }
 
@@ -124,7 +113,7 @@ impl SecureStorage {
             .map_err(|_| ProtocolError::StorageError)?;
         drop(file);
 
-        // 4. Save Manifest with HMAC authentication (v3.0.1)
+        // 4. Save Manifest with HMAC authentication 
         let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
         sha2::Digest::update(&mut hasher, &encrypted);
         let blob_hash: [u8; 32] = sha2::Digest::finalize(hasher).into();
@@ -171,7 +160,7 @@ impl SecureStorage {
         use std::io::Read;
         use crate::crypto::CryptoHandler;
 
-        // 1. Read Manifest if it exists (v3.0.0)
+        // 1. Read Manifest if it exists 
         let manifest_path = path.with_extension("manifest");
         let manifest: Option<StorageManifest> = if manifest_path.exists() {
             let bytes = std::fs::read(&manifest_path)
@@ -204,7 +193,7 @@ impl SecureStorage {
         let handler = CryptoHandler::new(encryption_key)
             .map_err(|_| ProtocolError::InternalError)?;
         
-        // 3. Verify Manifest HMAC and Hash (v3.0.1)
+        // 3. Verify Manifest HMAC and Hash 
         if let Some(ref m) = manifest {
             // First: verify the manifest's own HMAC to prevent manifest replacement
             use hmac::{Hmac, Mac};
@@ -254,8 +243,8 @@ impl SecureStorage {
             }
         }
 
-        // Safety Jump for all sessions (v3.0.0)
-        // This ensures no nonce reuse even after a crash
+        // Safety Jump for all sessions 
+        // no nonce reuse even after a crash
         for session_item in payload.sessions.iter() {
             session_item.value().read().jump_to_reservation()
                 .map_err(|_| ProtocolError::InternalError)?;

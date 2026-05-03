@@ -695,7 +695,7 @@ pub extern "C" fn sibna_perform_handshake(
     let peer_spk: Option<&[u8]> = Some(&bundle.signed_prekey);
     let peer_opk: Option<&[u8]> = bundle.onetime_prekey.as_ref().map(|k| k.as_ref());
 
-    // FIX: Extract the Ed25519 signature on the signed prekey from the validated bundle.
+    // Extract the Ed25519 signature on the signed prekey from the validated bundle.
     // bundle.validate() already checked this signature above, but we pass it explicitly
     // to perform_handshake so the core verifies it independently as well.
     let spk_sig: Option<[u8; 64]> = Some(bundle.signature);
@@ -823,6 +823,145 @@ pub extern "C" fn sibna_session_decrypt(
         }
         Err(e) => map_error(e),
     }
+}
+
+/// Sign `data` with the context's Ed25519 identity key.
+///
+/// `signature_out` must point to a 64-byte buffer.
+#[no_mangle]
+pub extern "C" fn sibna_identity_sign(
+    context: *mut SibnaContext,
+    data: *const u8,
+    data_len: usize,
+    signature_out: *mut u8,
+) -> SibnaResult {
+    if context.is_null() || data.is_null() || signature_out.is_null() {
+        set_last_error("Null pointer argument");
+        return SibnaResult::InvalidArgument;
+    }
+    if data_len == 0 {
+        set_last_error("data_len must be > 0");
+        return SibnaResult::InvalidArgument;
+    }
+
+    let ctx = unsafe { &*(context as *const crate::SecureContext) };
+    let data_slice = unsafe { slice::from_raw_parts(data, data_len) };
+
+    let keypair = match ctx.get_identity() {
+        Ok(kp) => kp,
+        Err(e) => return map_error(e),
+    };
+
+    match keypair.sign(data_slice) {
+        Ok(sig) => {
+            unsafe { ptr::copy_nonoverlapping(sig.as_ptr(), signature_out, 64); }
+            SibnaResult::Ok
+        }
+        Err(e) => map_error(e),
+    }
+}
+
+/// Verify an Ed25519 signature against a 32-byte public key.
+///
+/// `ed25519_pub` — 32-byte public key.
+/// `signature`   — 64-byte signature.
+///
+/// Returns `SibnaResult::Ok` if valid, `SibnaResult::AuthenticationFailed` if not.
+#[no_mangle]
+pub extern "C" fn sibna_identity_verify(
+    ed25519_pub: *const u8,
+    data: *const u8,
+    data_len: usize,
+    signature: *const u8,
+) -> SibnaResult {
+    if ed25519_pub.is_null() || data.is_null() || signature.is_null() {
+        set_last_error("Null pointer argument");
+        return SibnaResult::InvalidArgument;
+    }
+
+    let pub_bytes = unsafe { slice::from_raw_parts(ed25519_pub, 32) };
+    let data_slice = unsafe { slice::from_raw_parts(data, data_len) };
+    let sig_bytes = unsafe { slice::from_raw_parts(signature, 64) };
+
+    use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+
+    let key_arr: [u8; 32] = match pub_bytes.try_into() {
+        Ok(a) => a,
+        Err(_) => { set_last_error("Invalid public key length"); return SibnaResult::InvalidArgument; }
+    };
+    let sig_arr: [u8; 64] = match sig_bytes.try_into() {
+        Ok(a) => a,
+        Err(_) => { set_last_error("Invalid signature length"); return SibnaResult::InvalidArgument; }
+    };
+
+    let vk = match VerifyingKey::from_bytes(&key_arr) {
+        Ok(k) => k,
+        Err(_) => { set_last_error("Invalid Ed25519 public key"); return SibnaResult::InvalidArgument; }
+    };
+
+    match vk.verify(data_slice, &Signature::from_bytes(&sig_arr)) {
+        Ok(_) => SibnaResult::Ok,
+        Err(_) => SibnaResult::AuthenticationFailed,
+    }
+}
+
+/// Release resources associated with a `SibnaContext` identity.
+///
+/// Currently a no-op because identity state is owned by the context.
+/// Provided for API symmetry with future handle-based identity APIs.
+#[no_mangle]
+pub extern "C" fn sibna_identity_destroy(_context: *mut SibnaContext) {}
+
+/// Create a group session with the given 32-byte `group_id`.
+#[no_mangle]
+pub extern "C" fn sibna_group_create(
+    context: *mut SibnaContext,
+    group_id: *const u8,
+    group_id_len: usize,
+) -> SibnaResult {
+    if context.is_null() || group_id.is_null() {
+        set_last_error("Null pointer argument");
+        return SibnaResult::InvalidArgument;
+    }
+    if group_id_len != 32 {
+        set_last_error("group_id must be 32 bytes");
+        return SibnaResult::InvalidArgument;
+    }
+
+    let ctx = unsafe { &*(context as *const crate::SecureContext) };
+    let id_slice = unsafe { slice::from_raw_parts(group_id, 32) };
+    let mut id_arr = [0u8; 32];
+    id_arr.copy_from_slice(id_slice);
+
+    match ctx.create_group(id_arr) {
+        Ok(_) => SibnaResult::Ok,
+        Err(e) => map_error(e),
+    }
+}
+
+/// Remove a group session from the context.
+#[no_mangle]
+pub extern "C" fn sibna_group_destroy(
+    context: *mut SibnaContext,
+    group_id: *const u8,
+    group_id_len: usize,
+) -> SibnaResult {
+    if context.is_null() || group_id.is_null() {
+        set_last_error("Null pointer argument");
+        return SibnaResult::InvalidArgument;
+    }
+    if group_id_len != 32 {
+        set_last_error("group_id must be 32 bytes");
+        return SibnaResult::InvalidArgument;
+    }
+
+    let ctx = unsafe { &*(context as *const crate::SecureContext) };
+    let id_slice = unsafe { slice::from_raw_parts(group_id, 32) };
+    let mut id_arr = [0u8; 32];
+    id_arr.copy_from_slice(id_slice);
+
+    ctx.groups.write().leave_group(&id_arr);
+    SibnaResult::Ok
 }
 
 #[cfg(test)]

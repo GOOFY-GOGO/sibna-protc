@@ -128,7 +128,7 @@ pub fn x3dh_initiator_v3(
         dh_results.push(dh4.to_bytes());
     }
 
-    // Derive transcript hash (v3.0.0 Fortress)
+    // Derive transcript hash 
     // IMPORTANT: Only hash PUBLIC key material to ensure consistency and prevent leakage.
     let mut hasher = blake3::Hasher::new();
     hasher.update(PublicKey::from(our_identity).as_bytes());
@@ -142,7 +142,7 @@ pub fn x3dh_initiator_v3(
     hasher.update(peer_device_id);
     let transcript_hash: [u8; 32] = hasher.finalize().into();
 
-    // FIX: Replace XOR-based external transcript binding with HKDF-based combining.
+    // Replace XOR-based external transcript binding with HKDF-based combining.
     //
     // OLD CODE: for i in 0..32 { transcript_hash[i] ^= transcript_hash_ext[i]; }
     // PROBLEM:  XOR with transcript_hash_ext = [0u8; 32] (the default for non-P2P flows)
@@ -172,7 +172,7 @@ pub fn x3dh_initiator_v3(
         dh2.as_bytes(),
         dh3.as_bytes(),
         dh4.as_ref().map(|d| d.as_bytes()),
-        &combined_transcript, // FIX: use HKDF-combined transcript
+        &combined_transcript, // use HKDF-combined transcript
     )?;
 
     #[cfg(feature = "pqc")]
@@ -270,7 +270,7 @@ pub fn x3dh_responder_v3(
         dh_results.push(dh4.to_bytes());
     }
 
-    // Derive transcript hash (v3.0.0 Fortress)
+    // Derive transcript hash 
     // IMPORTANT: Only hash PUBLIC key material to ensure consistency and prevent leakage.
     let mut hasher = blake3::Hasher::new();
     hasher.update(peer_identity.as_bytes());
@@ -284,7 +284,7 @@ pub fn x3dh_responder_v3(
     hasher.update(peer_device_id);
     let transcript_hash: [u8; 32] = hasher.finalize().into();
 
-    // FIX: HKDF-based transcript binding (same as initiator — see x3dh_initiator_v3)
+    // HKDF-based transcript binding (same as initiator — see x3dh_initiator_v3)
     let combined_transcript: [u8; 32] = {
         use hkdf::Hkdf;
         use sha2::Sha256;
@@ -302,7 +302,7 @@ pub fn x3dh_responder_v3(
         dh2.as_bytes(),
         dh3.as_bytes(),
         dh4.as_ref().map(|d| d.as_bytes()),
-        &combined_transcript, // FIX: use HKDF-combined transcript
+        &combined_transcript, // use HKDF-combined transcript
     )?;
 
     #[cfg(feature = "pqc")]
@@ -381,7 +381,7 @@ impl X3dhSessionKeys {
             b"SibnaExtraKey2_v3",
         ];
 
-        // FIX: Use a proper domain-separation salt instead of empty slice
+        // Use a proper domain-separation salt instead of empty slice
         let keys = HkdfKdf::derive_multiple(shared_secret, b"SibnaX3DH_SessionKeys_v3", infos)?;
 
         if keys.len() < 3 {

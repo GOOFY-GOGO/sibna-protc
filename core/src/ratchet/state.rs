@@ -62,10 +62,10 @@ pub struct DoubleRatchetState {
     /// Last activity timestamp
     pub last_activity: u64,
 
-    /// Messages sent counter (v3.0.0)
+    /// Messages sent counter 
     pub messages_sent: u64,
 
-    /// Messages received counter (v3.0.0)
+    /// Messages received counter 
     pub messages_received: u64,
 
     /// State version for migrations
@@ -163,10 +163,8 @@ impl DoubleRatchetState {
     }
 
     pub fn set_local_dh(&mut self, secret: StaticSecret) {
-        // SECURITY FIX: dh_local_bytes must store the PUBLIC key only.
-        // Old code stored the raw StaticSecret bytes (the private scalar) here,
-        // which then persisted to disk and destroyed forward secrecy.
-        // Now we derive and store only the corresponding public key.
+        // dh_local_bytes must store the PUBLIC key only.
+        // Store the public key only — the private scalar must not reach disk.
         let public = PublicKey::from(&secret);
         self.dh_local_bytes = public.as_bytes().to_vec(); // PUBLIC only
         self.dh_local = Some(secret);
@@ -473,7 +471,7 @@ mod tests {
 
         // Restore
         assert!(state.restore_dh_keys().is_ok());
-        // Note: dh_local remains None because dh_local_bytes only contains public material.
+        // dh_local remains None because dh_local_bytes only contains public material.
         assert!(state.dh_local.is_none()); 
         assert!(state.dh_remote.is_some());
     }

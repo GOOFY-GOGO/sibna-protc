@@ -86,7 +86,7 @@ pub async fn ws_handler(
 
 /// Handle an authenticated WebSocket connection
 async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
-    // SECURITY FIX §5.3: WebSocket read timeout is now configurable via
+    // : WebSocket read timeout is now configurable via
     // SIBNA_WS_TIMEOUT_SECS (default: 120). The previous hardcoded 10s was too
     // aggressive for slow connections (2G, satellite) and could not be tuned.
     let ws_timeout_secs: u64 = std::env::var("SIBNA_WS_TIMEOUT_SECS")
@@ -119,7 +119,7 @@ async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
     let id_clone = identity_id.clone();
     let recv_task = tokio::spawn(async move {
         loop {
-            // SECURITY FIX §5.3: Apply configurable idle timeout per message receive.
+            // : Apply configurable idle timeout per message receive.
             // Stale/zombie connections are terminated after ws_timeout_secs of inactivity.
             let msg_result = tokio::time::timeout(ws_timeout, receiver.next()).await;
             let frame = match msg_result {
@@ -172,19 +172,19 @@ async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
 
 /// Route a sealed envelope to recipient or queue it
 async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEnvelope) {
-    // FIX: Validate message_id length to prevent key-bloat DoS on the dedup tree.
+    // Validate message_id length to prevent key-bloat DoS on the dedup tree.
     if envelope.message_id.is_empty() || envelope.message_id.len() > 128 {
         warn!("Dropping message with invalid message_id from {}", sender_id.get(..16).unwrap_or(sender_id));
         return;
     }
 
-    // FIX: Validate recipient_id format (must be 64 hex chars = 32-byte key)
+    // Validate recipient_id format (must be 64 hex chars = 32-byte key)
     if envelope.recipient_id.len() != 64 || !envelope.recipient_id.chars().all(|c| c.is_ascii_hexdigit()) {
         warn!("Dropping message with invalid recipient_id from {}", sender_id.get(..16).unwrap_or(sender_id));
         return;
     }
 
-    // V7 FIX: Validate payload_hex size. RequestBodyLimitLayer (64 KB) applies to
+    // Validate payload_hex size. RequestBodyLimitLayer (64 KB) applies to
     // HTTP requests only — WebSocket frames bypass it. Limit to 20 MB hex (= 10 MB payload).
     const MAX_PAYLOAD_HEX_LEN: usize = 20 * 1024 * 1024;
     if envelope.payload_hex.len() > MAX_PAYLOAD_HEX_LEN {
@@ -219,8 +219,6 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
     // CRYPTO: Verify Ed25519 signature from the sender.
     // The sender MUST sign a canonical payload that unambiguously encodes all fields.
     //
-    // SECURITY FIX: Old code used format!("{}{}{}", recipient_id, message_id, payload_hex)
-    // — simple concatenation without delimiters. This allows a field-boundary confusion
     // attack: if recipient_id="AABB", message_id="CCDD" produces the same string as
     // recipient_id="AABBCC", message_id="DD", an attacker can redirect a legitimate
     // message to a different recipient using the original sender's valid signature.
@@ -230,7 +228,7 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
     //   len(message_id_bytes)   || message_id_bytes
     //   len(payload_hex_bytes)  || payload_hex_bytes
     //
-    // This makes field boundaries unambiguous and prevents any overlap attack.
+    // field boundaries unambiguous and prevents any overlap attack.
     {
         use ed25519_dalek::{VerifyingKey, Signature, Verifier};
         use std::io::Write;
@@ -377,7 +375,7 @@ async fn route_webrtc(state: &AppState, sender_id: &str, mut signal: WebRtcSigna
     {
         use ed25519_dalek::{VerifyingKey, Signature, Verifier};
         use std::io::Write;
-        // SECURITY FIX: Same canonical length-prefixed format as route_message.
+        // Same canonical length-prefixed format as route_message.
         let mut canonical: Vec<u8> = Vec::with_capacity(
             2 * 8 + signal.recipient_id.len() + signal.payload_hex.len()
         );

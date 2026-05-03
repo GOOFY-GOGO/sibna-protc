@@ -111,3 +111,7 @@ tokio-test = "0.4.4"
 criterion = { version = "0.5.1", features = ["html_reports"] }
 proptest = "1.5.0"
 
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

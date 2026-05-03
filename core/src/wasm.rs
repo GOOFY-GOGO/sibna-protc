@@ -104,11 +104,21 @@ mod wasm_impl {
             bundle.validate()
                 .map_err(|e| JsValue::from_str(&format!("Invalid prekey bundle: {}", e)))?;
 
-            let peer_ik: Option<&[u8]> = Some(&bundle.identity_key);
+            let peer_ik:  Option<&[u8]> = Some(&bundle.identity_key);
             let peer_spk: Option<&[u8]> = Some(&bundle.signed_prekey);
             let peer_opk: Option<&[u8]> = bundle.onetime_prekey.as_ref().map(|k| k.as_ref());
+            let spk_sig:  Option<[u8; 64]> = Some(bundle.signature);
 
-            ctx.perform_handshake(session_id, initiator, peer_ik, peer_spk, peer_opk, None, None)
+            let role = if initiator {
+                crate::handshake::HandshakeRole::Initiator
+            } else {
+                crate::handshake::HandshakeRole::Responder
+            };
+
+            ctx.perform_handshake(
+                session_id, role, peer_ik, peer_spk,
+                spk_sig.as_ref(), peer_opk, None, None,
+            )
                 .map_err(|e| JsValue::from_str(&format!("Handshake failed: {}", e)))?;
 
             Ok(())

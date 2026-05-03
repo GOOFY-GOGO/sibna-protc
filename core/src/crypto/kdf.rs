@@ -292,7 +292,7 @@ impl Argon2Kdf {
 
 /// Simple hash-based key derivation (for compatibility)
 /// NOTE: Internally now uses HKDF for resistance against length-extension attacks.
-/// V4 FIX: The previous implementation did SHA256(salt ‖ input) which is
+/// The previous implementation did SHA256(salt ‖ input) which is
 /// length-extension-attack-vulnerable. All variants now use HKDF.
 pub struct SimpleKdf;
 
@@ -374,7 +374,7 @@ impl KeyDeriver {
                 HkdfKdf::derive_iterated(password, salt, info, params.iterations)
             }
             KdfAlgorithm::HkdfSha512 => {
-                // FIX: implement HkdfSha512 properly using SHA-512
+                // implement HkdfSha512 properly using SHA-512
                 use hkdf::Hkdf;
                 use sha2::Sha512;
                 let hkdf = Hkdf::<Sha512>::new(Some(salt), password);

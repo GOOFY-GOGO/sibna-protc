@@ -14,22 +14,18 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 const MESSAGE_HEADER_SIZE: usize = 8 + 8 + 8; // message_number + timestamp + padding
 
 /// Maximum message age in seconds (24 hours - allows offline/delayed delivery)
-/// Note: This Encryptor-level check is a secondary defense; Double Ratchet provides
+/// This Encryptor-level check is a secondary defense; Double Ratchet provides
 /// forward secrecy. Tighten to 300 for high-security deployments.
 const MAX_MESSAGE_AGE_SECS: u64 = 86400;
 
 /// Clock skew tolerance in seconds (30 seconds)
 const CLOCK_SKEW_TOLERANCE_SECS: u64 = 30;
 
-/// Message encryptor with replay protection
+/// ChaCha20-Poly1305 encryptor with per-message sequence numbers and replay detection.
 ///
-/// SECURITY FIX §3.3: Replaced bare HashSet with a timestamp-anchored sliding window.
-/// The old design allowed replay attacks: once seen_numbers exceeded max_seen_numbers,
-/// old entries were evicted by number, not time. An attacker could capture a message,
-/// wait for the set to cycle, and replay it. The new design:
-///   1. Enforces a TIMESTAMP window (MAX_MESSAGE_AGE_SECS) as the primary guard.
-///   2. Tracks seen numbers only within the current timestamp window.
-///   3. Evicts entries whose timestamp is outside the window, not by count.
+/// Replay detection uses a HashMap<message_number, timestamp>. Entries are evicted
+/// when their recorded timestamp falls outside MAX_MESSAGE_AGE_SECS, not by count.
+/// The hard cap (max_seen_numbers) is a memory backstop only.
 pub struct Encryptor {
     /// The cipher instance
     cipher: ChaCha20Poly1305,
@@ -171,10 +167,8 @@ impl Encryptor {
             return Err(CryptoError::InvalidCiphertext);
         }
 
-        // Check for replay — consult seen_numbers which stores (number → timestamp).
-        // SECURITY FIX §3.3: Use timestamp-anchored check: a message number is a replay
-        // only if it was seen AND its recorded timestamp is still within the valid window.
-        // This prevents the old HashSet eviction bypass.
+        // Replay check: seen_numbers maps message_number → timestamp.
+        // Time-based eviction (not count-based) prevents the sliding-window bypass.
         if self.seen_numbers.contains_key(&message_number) {
             return Err(CryptoError::AuthenticationFailed);
         }
@@ -219,12 +213,7 @@ impl Encryptor {
         header
     }
 
-    /// Update seen message numbers using timestamp-anchored sliding window.
-    ///
-    /// SECURITY FIX §3.3: Evicts by timestamp window rather than by count.
-    /// Entries older than MAX_MESSAGE_AGE_SECS are removed — they can never arrive
-    /// legitimately, so there is no value in keeping them for replay detection.
-    /// The hard-cap (max_seen_numbers) remains as a memory exhaustion safeguard.
+    // Evict by age first, then fall back to size cap.
     fn update_seen_numbers(&mut self, message_number: u64, timestamp: u64) {
         if message_number > self.max_message_number {
             self.max_message_number = message_number;
@@ -232,9 +221,6 @@ impl Encryptor {
 
         self.seen_numbers.insert(message_number, timestamp);
 
-        // Evict by time: anything older than MAX_MESSAGE_AGE_SECS cannot be replayed
-        // legitimately (timestamp check in decrypt_message rejects them), so it is
-        // safe to remove them from the replay set.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -243,9 +229,8 @@ impl Encryptor {
         let cutoff = now.saturating_sub(MAX_MESSAGE_AGE_SECS);
         self.seen_numbers.retain(|_, &mut ts| ts >= cutoff);
 
-        // Hard cap: if still over limit after time-eviction, evict oldest timestamps
+        // Size backstop: keep newest entries when still over cap after age eviction.
         if self.seen_numbers.len() > self.max_seen_numbers {
-            // Collect and sort by timestamp to evict oldest first
             let mut entries: Vec<(u64, u64)> = self.seen_numbers
                 .iter()
                 .map(|(&k, &v)| (k, v))

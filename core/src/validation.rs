@@ -22,7 +22,7 @@ pub mod limits {
     /// Minimum group ID length
     pub const MIN_GROUP_ID_LEN: usize = 1;
     /// Maximum associated data length - aligned with crypto layer limit (256 bytes)
-    /// FIX: Was 1024, but CryptoHandler::encrypt enforces MAX_INFO_LENGTH=256.
+    /// Was 1024, but CryptoHandler::encrypt enforces MAX_INFO_LENGTH=256.
     /// Using >256 bytes of AD would silently fail at crypto layer.
     pub const MAX_AD_LEN: usize = 256;
     /// Maximum key size
@@ -666,7 +666,7 @@ mod tests {
         assert!(validate_prekey_bundle(&ik, &ik, &sig, None).is_err());
     }
 
-    /// SECURITY FIX §4.3: Regression test — MAX_AD_LEN must match the crypto layer limit (256).
+    /// : Regression test — MAX_AD_LEN must match the crypto layer limit (256).
     /// If this test fails, validation.rs and crypto/mod.rs are out of sync and messages
     /// with >256 bytes of associated data will be silently rejected at the crypto layer.
     #[test]

@@ -1,186 +1,254 @@
-# Sibna Protocol Specification — v3.0.0 
+# Sibna Protocol Specification — v3.0.1
 
 ---
 
-## 1. Definitions & Terminology
+## 1. Definitions
 
-The following keywords are used in this specification to define protocol behavior:
-- **MUST**: Indicates a mandatory requirement for security or interoperability.
-- **SHOULD**: Indicates a recommended but non-mandatory behavior.
-- **MAY**: Indicates an optional feature.
-- **Protocol Invariant**: A security property that must hold true across all valid states and transitions of the protocol world-view.
+**MUST** — mandatory for security or interoperability.  
+**SHOULD** — recommended, non-mandatory.  
+**MAY** — optional.
 
-## 2. Key Agreement: X3DH v3
+---
 
-### 1.1 Key Types
+## 2. Key Agreement: X3DH
+
+### 2.1 Key Types
 
 | Type | Algorithm | Lifespan |
-|-------|------------|-------|
-| Identity Key (IK) | Ed25519 / X25519 | Permanent |
-| Signed Prekey (SPK) | X25519 signed by IK | Medium |
-| One-Time Prekey (OPK) | X25519 | Single Use |
-| Ephemeral Key (EK) | X25519 | Single Session |
-| ML-KEM-768 Key | ML-KEM-768 (FIPS 203) | Tied to SPK |
+|------|-----------|----------|
+| Identity Key (IK) | Ed25519 + X25519 (dual-key) | Permanent |
+| Signed Prekey (SPK) | X25519, signed by Ed25519 IK | ≤ 30 days |
+| One-Time Prekey (OPK) | X25519 | Single use |
+| Ephemeral Key (EK) | X25519 | Single handshake |
+| Post-Quantum Key | ML-KEM-768 (FIPS 203) | Tied to SPK rotation |
 
-### 1.2 Handshake Steps
+### 2.2 SPK Signature
+
+The initiator MUST verify the SPK signature before any DH computation:
+
+```
+spk_signature = Ed25519.Sign(IK_B.private, "SibnaSignedPreKey_v3" || SPK_B.public)
+```
+
+Bundles with an invalid SPK signature MUST be rejected.
+
+### 2.3 Handshake Steps
 
 ```
 Alice (Initiator)                           Bob (Responder)
 ─────────────────────────────────────────────────────────
-1. Fetches prekey bundle from server
-2. Generates random EK
-3. Encapsulates KEM secret: (ss_kem, ct_kem) = KEM.Enc(SPK_B.pk) [if PQC]
-4. Computes classical DH:
-   dh1 = DH(IK_A, SPK_B)
-   dh2 = DH(EK_A, IK_B)
-   dh3 = DH(EK_A, SPK_B)
-   dh4 = DH(EK_A, OPK_B)  [if OPK exists]
-5. Computes Transcript Hash:
-   T = BLAKE3(IK_A || IK_B || EK_A || SPK_B || OPK_B || device_id_A || device_id_B)
-6. Derives final key:
-   SK = HKDF-SHA256(salt=T, ikm=ss_kem || dh1 || dh2 || dh3 || dh4)
+1. Fetch prekey bundle; verify SPK signature against IK_B.
+2. Generate random EK_A.
+3. [PQC] (ss_kem, ct_kem) = ML-KEM-768.Enc(SPK_B.pq_pk)
+4. Compute DH:
+     dh1 = DH(IK_A.x25519, SPK_B)
+     dh2 = DH(EK_A, IK_B.x25519)
+     dh3 = DH(EK_A, SPK_B)
+     dh4 = DH(EK_A, OPK_B)  [if present]
+5. Transcript hash:
+     T_internal = BLAKE3(IK_A || EK_A || IK_B || SPK_B || OPK_B ||
+                          device_id_A || device_id_B)
+     T = HKDF-SHA256-Extract(salt=transcript_hash_ext, ikm=T_internal)
+         with info="SibnaX3DH_TranscriptBind_v3"
+6. Derive session key:
+     SK = HKDF-SHA256(salt=T, ikm=ss_kem || dh1 || dh2 || dh3 || dh4)
 ```
 
-**Transcript Binding:** Binding the derived key to all participating public keys and device IDs prevents key-substitution and UKS (Unknown Key-Share) attacks.
+`transcript_hash_ext` is `[0u8; 32]` for relay-mediated connections. For direct P2P it carries the P2P handshake transcript.
 
-**Quantum Hybrid:** An attacker must break **both** (X25519 and ML-KEM-768) simultaneously to compromise the handshake.
+### 2.4 Associated Data
+
+```
+AD = IK_A.ed25519_public || IK_B.ed25519_public
+```
 
 ---
 
-## 2. Session Management: Double Ratchet
+## 3. Double Ratchet
 
-### 2.1 Symmetric Ratchet
+### 3.1 Symmetric Ratchet
 
 ```
-chain_key[n+1] = HMAC-SHA256(chain_key[n], 0x02)
-message_key[n] = HMAC-SHA256(chain_key[n], 0x01)
+message_key[n]  = HMAC-SHA256(chain_key[n], 0x01)
+chain_key[n+1]  = HMAC-SHA256(chain_key[n], 0x02)
 ```
 
-After use, the `message_key` is immediately zeroized (Forward Secrecy).
+`message_key` is zeroized immediately after use.
 
-### 2.2 DH Ratchet
+### 3.2 DH Ratchet
 
-After each full round trip, a new X25519 exchange occurs — resetting the `root_key` (Post-Compromise Security).
+```
+(root_key', chain_key') = HKDF-SHA256(
+    salt = root_key,
+    ikm  = DH(local_ratchet_key, remote_ratchet_key),
+    info = "SibnaRatchet_v3",
+    len  = 64,
+)
+```
+
+### 3.3 Message Header
+
+Wire layout (all fields little-endian):
+
+```
+dh_public(32) || message_number(8) || previous_chain_length(8) || timestamp(8)
+```
+
+Header encryption is not implemented in v3.0.x (planned for v3.1). The DH public key and message number are transmitted in plaintext.
+
+**Validation rules:**
+
+- `dh_public` MUST NOT be all zeros.
+- `message_number` MUST be ≤ 1 000 000 000 000.
+- `timestamp` MUST be within [now − 86400s, now + 300s]. `timestamp == 0` is rejected.
+
+### 3.4 Skipped Message Keys
+
+Up to `MAX_SKIPPED_MESSAGES = 2000` out-of-order message keys are cached. Each entry expires after 86 400 s. Skipped keys are single-use: removed on first use.
+
+### 3.5 DH Key Persistence
+
+The X25519 ratchet private scalar is never written to disk. `dh_local_serde` serializes `None` unconditionally. After a load, `dh_local` is `None`; the next outgoing ratchet step generates a fresh pair automatically.
 
 ---
 
-## 3. Hybrid Routing (P2P + Relay)
+## 4. Envelope Signing (Relay)
 
-### 3.1 "P2P-First" Policy
+### 4.1 Canonical Signed Payload
 
-Sibna attempts a P2P handshake via mDNS/Stealth discovery before falling back to the authenticated relay server.
+```
+canonical = u64_be(len(recipient_id)) || recipient_id_bytes
+         || u64_be(len(message_id))   || message_id_bytes
+         || u64_be(len(payload_hex))  || payload_hex_bytes
+```
 
-### 3.2 Security Limits
+Length-prefix encoding prevents field-boundary reinterpretation. Concatenation without delimiters (used prior to v3.0.1) is invalid.
 
-| Limit | Value | Purpose |
-|------|--------|-------|
-| `MAX_ACTIVE_PEERS` | 500 | Prevent mDNS flood |
-| `MAX_MESSAGE_BYTES` | 64 MiB | Prevent massive memory allocations |
-| Address Validation | Rejects loopback / multicast / unspecified / port 0 | Prevent local pivot attacks |
+### 4.2 WebRTC Signals
 
----
-
-## 4. Metadata Protection
-
-### 4.1 Sealed Sender
-The relay server identifies the sender for routing but cannot decrypt message contents.
-
-### 4.2 Message Size Padding
-Messages use a hardened padding format with a noise prefix to prevent size inference.
-
-**Format:** `[8 bytes Noise] [2 bytes LE Payload length] [Payload] [Random Padding]`
-Standard block size is 1KB; Hardened mode uses 64KB.
+Same format with fields: `recipient_id`, `payload_hex`.
 
 ---
 
 ## 5. Server Authentication
 
-1. Client requests 32-byte challenge.
-2. Server stores challenge with HMAC integrity and TTL.
-3. Client signs challenge with Ed25519.
-4. Server verifies HMAC (Constant-Time) and signature, then issues JWT.
+1. Client requests a 32-byte random challenge.
+2. Server stores `HMAC-SHA256(challenge, jwt_secret)` with a TTL.
+3. Client signs the raw challenge bytes with Ed25519.
+4. Server verifies HMAC (constant-time) and Ed25519 signature, then issues JWT (HS256).
+
+`SIBNA_JWT_SECRET` MUST be set in production (minimum 32 characters). The server returns an error on startup when `SIBNA_ENV=production` and the secret is absent or too short.
 
 ---
 
----
+## 6. P2P Handshake
 
-## 7. Formal Security Assumptions
+### 6.1 Peer Identity Verification
 
-Sibna Protocol v3.0.0 is designed under the following cryptographic hardness assumptions. If any of these are broken, the security invariants of the protocol may fail.
+Set `P2pConfig::expected_peer_identity` to the peer's Ed25519 public key. The handshake rejects any peer whose identity does not match. This guards against active MITM substitution of the prekey bundle.
 
-| Component | Formal Assumption | Description |
-|-----------|-------------------|-------------|
-| **X25519 DH** | CDH (Computational Diffie-Hellman) | It is computationally infeasible to compute `g^(ab)` from `g^a` and `g^b`. |
-| **ML-KEM-768** | Module-LWE (Learning With Errors) | The underlying lattice problem is computationally hard even for quantum computers. |
-| **HKDF-SHA256** | PRF (Pseudo-Random Function) | HKDF behaves like a secure pseudo-random function extractor/expander. |
-| **Authentication** | EUF-CMA (Existential Unforgeability) | Ed25519 signatures cannot be forged under chosen message attacks. |
-| **Encryption** | IND-CCA2 | The AEAD scheme (ChaCha20-Poly1305) provides ciphertext indistinguishability under chosen-ciphertext attacks. |
+Leave this field `None` only for anonymous mDNS discovery. In that case, verify safety numbers interactively after connection.
 
----
+### 6.2 Handshake Key Derivation
 
-## 8. Comparative Analysis
+```
+shared = X25519(our_ephemeral.private, peer_ephemeral.public)
+K      = HKDF-SHA256(salt=shared, ikm=shared, info="SibnaHandshake_v3")
+```
 
-Sibna v3.0.0 is a hybrid design influenced by the Signal and Noise protocols, with specialized hardening for P2P and quantum resilience.
-
-| Feature | Signal Protocol | Noise Protocol | Sibna v3.0.0 |
-|---------|-----------------|----------------|--------------|
-| **Core Handshake** | X3DH | Customizable Patterns | **X3DH v3** |
-| **Quantum Safe** | Optional (PQX3DH) | No (Standard) | **Hybrid (Default)** |
-| **Role Resolution** | Server-mediated | Pattern-driven | **Lexicographical** |
-| **Transcript Binding** | Partial | Pattern-bound | **Full (Hardened)** |
-| **Metadata Protection** | Sealed Sender (V2) | N/A | **Sealed Sender (Blinded)** |
-| **Padding** | Implicit | N/A | **Hardened (64KB Noise)** |
-| **Forward Secrecy** | Double Ratchet | Optional (Rekey) | **Double Ratchet** |
+`K` encrypts `StealthBundle`, `StealthEnvelope`, and `OkSignal`. Each uses an independent random nonce.
 
 ---
 
-## 10. Handshake Message Formats (Formal Specification)
+## 7. Storage
 
-Handshake messages MUST follow the following binary structure. Fields are in Little-Endian (LE) format where applicable.
+### 7.1 File Layout
 
-### 10.1 `HandshakeInitiate` (Alice -> Bob)
-```rust
-struct HandshakeInitiate {
-    version: u8,               // Protocol context (MUST be 3)
-    ephemeral_pk: [u8; 32],    // EK_A (X25519)
-    identity_pk: [u8; 32],     // IK_A (Ed25519)
-    kem_ciphertext: [u8; 1088], // ML-KEM-768 ciphertext (ss_kem)
-    transcript_hash: [u8; 32], // Hash of IDs and Keys (BLAKE3)
-    signature: [u8; 64],       // Ed25519 signature of the hash
-    device_id: [u8; 16],       // Initiator device identifier
+```
+{db_path}           — Argon2id-encrypted payload (bincode 2, legacy wire format)
+{db_path}.salt      — 32-byte Argon2id salt (header: b"SIBNA_SALT_V1")
+{db_path}.manifest  — Rollback protection manifest
+```
+
+The salt file is written atomically on first `SecureContext::new` when a `db_path` is configured. An existing salt file is never overwritten.
+
+### 7.2 Manifest
+
+```
+struct StorageManifest {
+    version:         u32,
+    sequence_number: u64,
+    blob_hash:       [u8; 32],  // SHA-256(encrypted blob)
+    manifest_mac:    [u8; 32],  // HMAC-SHA256(v||seq||hash, key=encryption_key)
 }
 ```
 
-### 10.2 `HandshakeResponse` (Bob -> Alice)
-```rust
-struct HandshakeResponse {
-    version: u8,               // Protocol context (MUST be 3)
-    ephemeral_pk: [u8; 32],    // EK_B (X25519)
-    acknowledgment: [u8; 32],  // BLAKE3 hash of received initiate
-}
-```
+On load, the HMAC is verified before the blob hash. A mismatch either indicates a rollback attempt or a manifest from v3.0.0 (which lacked HMAC). Delete the manifest to recover; rollback protection is inactive for that session.
+
+**Threat model:** protects against an attacker who can write files but cannot derive the encryption key. Attackers with full memory access (cold boot, etc.) are out of scope.
 
 ---
 
-## 11. Security Goals & Protocol Invariants
+## 8. Validation Limits
 
-The Sibna Protocol is designed to ensure the following fundamental invariants. A violation of any invariant constitutes a protocol-level security breakage.
-
-| Invariant | Goal | Description |
-|-----------|------|-------------|
-| **Key Indistinguishability** | Confidentiality | The derived session key `SK` MUST be indistinguishable from random to an adversary $\mathcal{A}$ under the CDH + LWE hardness assumptions. |
-| **Transcript Constancy** | Integrity | The handshake MUST fail if any participating public key or device identifier is modified during transport (enforced by BLAKE3 transcript binding). |
-| **Session Isolation** | Forward Secrecy | A compromise of current `message_key[n]` MUST NOT compromise `message_key[n-1]` (enforced by immediate zeroization of keys). |
-| **Healing Consistency** | PCS | After a successful DH ratchet round-trip, the `root_key` MUST be refreshed, healing the session from previous leakage. |
-| **Identity Uniqueness** | Authenticity | A single session MUST NOT be established between different identity pairs (enforced by IK_A \|\| IK_B binding in the transcript). |
+| Constant | Value |
+|----------|-------|
+| `MAX_AD_LEN` | 256 bytes |
+| `MAX_MESSAGE_SIZE` | 10 MiB |
+| `MAX_SESSION_ID_LEN` | 256 bytes |
+| `MAX_PASSWORD_LEN` | 256 bytes |
+| `MAX_SKIPPED_MESSAGES` | 2 000 |
+| `MAX_MESSAGE_AGE_SECS` | 86 400 |
+| `PROTOCOL_VERSION` (wire) | 9 |
+| `MIN_COMPATIBLE_VERSION` | 8 |
 
 ---
 
-## 12. Deniability & Privacy Goals
+## 9. Security Assumptions
 
-| Property | Level | Engineering Evidence |
-|----------|-------|----------------------|
-| **Perfect Forward Secrecy** | Full | HMAC-SHA256 ratchet chains + DH Ephemeral update. |
-| **Post-Compromise Security** | Full | Independent DH Ratchet round-trips. |
-| **Identity Hiding** | Partial | Handshake uses Ed25519 over transcript hash; identity keys are known to the relay but payload is sealed. |
-| **Traffic Anonymity** | Integrated | Native support for SOCKS5/Tor to decouple IP identity. |
+| Component | Assumption |
+|-----------|------------|
+| X25519 | CDH over Curve25519 |
+| ML-KEM-768 | Module-LWE (FIPS 203) |
+| HKDF-SHA256 | PRF security |
+| Ed25519 | EUF-CMA |
+| ChaCha20-Poly1305 | IND-CCA2 |
+| Argon2id | Memory-hard password KDF |
+
+---
+
+## 10. Known Limitations
+
+**Header encryption.** The DH public key and message number are transmitted in plaintext. A passive observer can correlate messages within a session and observe ratchet epoch transitions. Scheduled for v3.1.
+
+**Software-only key storage.** Forward secrecy holds at the protocol layer. Key material on disk is protected by Argon2id + ChaCha20-Poly1305, but an attacker with persistent read access to the filesystem before key deletion can recover past material.
+
+**No formal proof.** The protocol has not been verified with ProVerif, Tamarin, or equivalent tools.
+
+**External audit pending.** The protocol has not received a formal external cryptographic audit.
+
+---
+
+## 11. Protocol Invariants
+
+| Invariant | Where enforced |
+|-----------|---------------|
+| SPK signature verified before DH | `lib.rs::perform_handshake`, FFI path |
+| X25519 private scalar never reaches disk | `dh_local_serde` |
+| Replay detection uses time-bounded window | `encryptor::update_seen_numbers` |
+| `timestamp == 0` rejected | `RatchetHeader::validate` |
+| Envelope fields signed with length prefix | `server/ws.rs::route_message` |
+| Manifest integrity via HMAC | `storage::load_context` |
+| P2P peer identity verified | `p2p::initiator_handshake` |
+
+---
+
+## 12. Privacy Properties
+
+| Property | Level | Notes |
+|----------|-------|-------|
+| Forward Secrecy | Full | Symmetric + DH ratchet |
+| Post-Compromise Security | Full | DH ratchet round-trips |
+| Identity Hiding | Partial | Relay sees sender for routing |
+| Traffic Anonymity | Optional | SOCKS5/Tor via `P2pConfig::proxy` |
+| Message Unlinkability | Partial | Limited by plaintext headers |

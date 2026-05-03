@@ -83,7 +83,7 @@ pub fn pad_message(plaintext: &[u8], mode: PaddingMode) -> ProtocolResult<Vec<u8
 
     let block = mode.block_size();
 
-    // SECURITY FIX §5.1: Custom block size must be a power of two and at least 64 bytes.
+    // : Custom block size must be a power of two and at least 64 bytes.
     // Invalid block sizes produce non-aligned output that breaks unpad_message and
     // leaks message size information. debug_assert was insufficient (no-op in release).
     if let PaddingMode::Custom(n) = mode {

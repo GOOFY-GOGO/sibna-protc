@@ -42,7 +42,7 @@ impl DoubleRatchetSession {
         let mut dh_local_bytes = [0u8; 32];
         rng.fill_bytes(&mut dh_local_bytes);
         let dh_local = StaticSecret::from(dh_local_bytes);
-        // SECURITY FIX: store PUBLIC key, not the private scalar
+        // store PUBLIC key, not the private scalar
         let dh_public_bytes = PublicKey::from(&dh_local).as_bytes().to_vec();
         dh_local_bytes.zeroize(); // Wipe private scalar temp buffer immediately
         let now = std::time::SystemTime::now()
@@ -55,7 +55,7 @@ impl DoubleRatchetSession {
             sending_chain: None,
             receiving_chain: None,
             dh_local: Some(dh_local),
-            dh_local_bytes: dh_public_bytes, // PUBLIC only — see SECURITY FIX above
+            dh_local_bytes: dh_public_bytes, // public key bytes only
             dh_remote: None,
             dh_remote_bytes: None,
             skipped_message_keys: HashMap::new(),
@@ -80,7 +80,7 @@ impl DoubleRatchetSession {
         })
     }
 
-    /// FIX: HKDF now uses single 64-byte expand then splits into root_key + chain_key.
+    /// HKDF now uses single 64-byte expand then splits into root_key + chain_key.
     /// Previously two separate expand() calls on the same PRK with no salt were used,
     /// which while not catastrophically broken, is non-standard and wastes KDF strength.
     pub fn from_shared_secret(
@@ -94,7 +94,7 @@ impl DoubleRatchetSession {
             return Err(ProtocolError::InvalidArgument);
         }
 
-        // FIX: Single HKDF expand for 64 bytes, split into root_key (32) + chain_key (32)
+        // Single HKDF expand for 64 bytes, split into root_key (32) + chain_key (32)
         let hkdf = Hkdf::<Sha256>::new(Some(b"SibnaSession_v3"), shared_secret);
         let mut okm = [0u8; 64];
         hkdf.expand(b"SibnaRootAndChainKey_v3", &mut okm)
@@ -112,7 +112,7 @@ impl DoubleRatchetSession {
             (None, Some(ChainKey::new(chain_key)))
         };
 
-        // SECURITY FIX: dh_local_bytes stores the PUBLIC key only
+        // dh_local_bytes stores the PUBLIC key only
         let dh_local_bytes = PublicKey::from(&local_dh).as_bytes().to_vec();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -166,7 +166,7 @@ impl DoubleRatchetSession {
         let sending_chain = state.sending_chain.as_mut()
             .ok_or(ProtocolError::InvalidState)?;
 
-        // Nonce Safety Check (v3.0.0)
+        // Nonce Safety Check 
         if sending_chain.index >= sending_chain.reserved_until {
             return Err(ProtocolError::NonceReservationRequired);
         }
@@ -188,7 +188,7 @@ impl DoubleRatchetSession {
 
         header.validate()?;
 
-        // FIX: initial_message_number=0, not u64::MAX. The Encryptor's counter
+        // initial_message_number=0, not u64::MAX. The Encryptor's counter
         // tracks its own sequence; using MAX was a logic error that could cause
         // wrapping issues and bypasses replay detection on first message.
         let mut encryptor = Encryptor::new(&message_key, 0)
@@ -284,7 +284,7 @@ impl DoubleRatchetSession {
         header: &RatchetHeader, state: &mut DoubleRatchetState,
         key_tuple: &([u8; 32], u64),
     ) -> ProtocolResult<Vec<u8>> {
-        // FIX: initial_message_number=0 (consistent with encrypt)
+        // initial_message_number=0 (consistent with encrypt)
         let mut encryptor = Encryptor::new(key, 0).map_err(ProtocolError::from)?;
 
         let header_bytes = header.to_bytes();
@@ -301,7 +301,7 @@ impl DoubleRatchetSession {
         result
     }
 
-    /// FIX: All unwrap() replaced with ? operator - no more panics on malformed messages.
+    /// All unwrap() replaced with ? operator - no more panics on malformed messages.
     fn skip_message_keys(&self, state: &mut DoubleRatchetState, until_n: u64) -> ProtocolResult<()> {
         if state.receiving_chain.is_none() { return Ok(()); }
 
@@ -401,7 +401,7 @@ impl DoubleRatchetSession {
     pub fn is_expired(&self) -> bool { self.state.read().is_expired() }
 
     /// Serialize the current session state to bytes.
-    /// 
+    ///
     /// Used for persistent storage of ratchet state.
     pub fn serialize_state(&self) -> ProtocolResult<Vec<u8>> {
         let state = self.state.read();
@@ -428,7 +428,7 @@ impl DoubleRatchetSession {
         Ok(())
     }
 
-    /// Jump the sending ratchet to the reserved index (v3.0.0)
+    /// Jump the sending ratchet to the reserved index 
     pub fn jump_to_reservation(&self) -> ProtocolResult<()> {
         let mut state = self.state.write();
         if let Some(ref mut ck) = state.sending_chain {
@@ -440,7 +440,7 @@ impl DoubleRatchetSession {
         Ok(())
     }
 
-    /// Reserve nonces for future sends (v3.0.0)
+    /// Reserve nonces for future sends 
     pub fn reserve_nonces(&self, count: u64) -> ProtocolResult<()> {
         let mut state = self.state.write();
         if let Some(ref mut ck) = state.sending_chain {

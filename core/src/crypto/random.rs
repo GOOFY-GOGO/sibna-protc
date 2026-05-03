@@ -5,7 +5,7 @@ use super::{CryptoError, CryptoResult};
 use rand_core::{CryptoRng, RngCore};
 use rand::rngs::OsRng;
 use zeroize::{Zeroize, ZeroizeOnDrop};
-// SECURITY FIX §4.5: HKDF-based entropy combining
+// : HKDF-based entropy combining
 use hkdf::Hkdf;
 use sha2::Sha256;
 
@@ -26,7 +26,7 @@ impl SecureRandom {
 
         rng.fill_bytes(&mut entropy_pool);
 
-        // Mix in environmental noise (v3.0.0)
+        // Mix in environmental noise 
         let pid = std::process::id().to_le_bytes();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -42,7 +42,7 @@ impl SecureRandom {
             return Err(CryptoError::RandomFailed);
         }
 
-        // MEMORY PINNING (Hardened v3.0.0): Pin the entropy pool to RAM to prevent 
+        // MEMORY PINNING : Pin the entropy pool to RAM to prevent 
         // it being swapped to disk where it could be recovered by an attacker.
         #[cfg(windows)]
         unsafe {
@@ -69,7 +69,7 @@ impl SecureRandom {
             self.reseed();
         }
 
-        // SECURITY FIX §4.5: Replace naive XOR mixing with HKDF-Extract + HKDF-Expand.
+        // : Replace naive XOR mixing with HKDF-Extract + HKDF-Expand.
         //
         // Old design: output[i] = OsRng[i] XOR pool[i % 64]
         //   Problem: XOR with a fixed-length pool provides no entropy amplification.
@@ -78,7 +78,7 @@ impl SecureRandom {
         //
         // New design: Derive output via HKDF-Extract(salt=pool, ikm=OsRng_bytes),
         //   then HKDF-Expand into the requested length.
-        //   This is a standard entropy-combining construction (RFC 5869 §3.3):
+        //   This is a standard entropy-combining construction (RFC 5869 ):
         //   the output is at least as strong as the stronger of the two inputs.
 
         // Draw fresh random bytes from OsRng

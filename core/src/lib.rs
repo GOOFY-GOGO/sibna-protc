@@ -122,7 +122,7 @@ pub const MIN_COMPATIBLE_VERSION: u32 = 1;
 
 /// Main System Context for secure communication
 ///
-/// This is the primary entry point for the Sibna protocol. It manages
+/// primary entry point for the Sibna protocol. It manages
 /// key storage, session state, group messaging, and cryptographic operations.
 #[derive(Clone)]
 pub struct SecureContext {
@@ -230,7 +230,7 @@ impl Config {
     }
 
     /// Creates a "Fortress" configuration for maximum metadata and identity protection.
-    /// This enables Quantum Padding (64KB), mandatory Safety Number verification (Zero-TOFU),
+    /// Quantum Padding (64KB), mandatory Safety Number verification (Zero-TOFU),
     /// and uses high-density Cover Traffic by default.
     pub fn fortress_mode() -> Self {
         Self {
@@ -262,7 +262,7 @@ impl SecureContext {
 
         // Derive storage key from master password using Argon2id (memory-hard KDF).
         //
-        // FIX: Replaced HkdfKdf::derive_iterated(10000 rounds) with Argon2id.
+        // Replaced HkdfKdf::derive_iterated(10000 rounds) with Argon2id.
         // HKDF-iterated is NOT a password-based KDF: it is fast to compute, which
         // means an attacker with a GPU can try billions of password candidates per
         // second. Argon2id is specifically designed to be memory-hard and GPU-resistant.
@@ -271,7 +271,7 @@ impl SecureContext {
         // encrypted keystore so it can be reproduced on load. Currently the salt is
         // ephemeral (not persisted), which means the storage key changes on every
         // restart. Integrators using persistent storage MUST persist the salt.
-        // TODO (tracked): salt is now persisted in the keystore header (v3.0.0).
+        // TODO (tracked): salt is now persisted in the keystore header .
         let (storage_key, storage_salt) = if let Some(password) = master_password {
             #[cfg(feature = "argon2")]
             {
@@ -345,7 +345,7 @@ impl SecureContext {
             created_at: std::time::Instant::now(),
         };
 
-        // SECURITY FIX §3.1: When a db_path is configured and a master_password is
+        // : When a db_path is configured and a master_password is
         // provided, auto-persist immediately so the salt is never lost. Without this,
         // a restart after ::new but before the caller calls save() would make the
         // keystore unrecoverable (different salt → different storage key).
@@ -495,7 +495,7 @@ impl SecureContext {
         role: HandshakeRole,
         peer_identity_key: Option<&[u8]>,
         peer_signed_prekey: Option<&[u8]>,
-        peer_spk_signature: Option<&[u8; 64]>, // FIX: dedicated SPK signature parameter
+        peer_spk_signature: Option<&[u8; 64]>,
         peer_onetime_prekey: Option<&[u8]>,
         peer_device_id: Option<[u8; 16]>,
         prologue: Option<&[u8]>,
@@ -525,7 +525,7 @@ impl SecureContext {
             .with_role(role)
             .with_our_device_id(self.device_id);
 
-        // FIX: Verify the Ed25519 signature on the peer's signed prekey BEFORE
+        // Verify the Ed25519 signature on the peer's signed prekey BEFORE
         // using it in the X3DH computation. Without this check, a MITM can substitute
         // an arbitrary signed prekey (for which they have the private key) and derive
         // the same shared secret as the victim — breaking authentication silently.
@@ -546,7 +546,7 @@ impl SecureContext {
                     peer_ik.try_into().map_err(|_| ProtocolError::InvalidKeyLength)?
                 ).map_err(|_| ProtocolError::InvalidKey)?;
 
-                // FIX: Use dedicated peer_spk_signature parameter instead of
+                // Use dedicated peer_spk_signature parameter instead of
                 // piggybacking on prologue (which was an API misuse).
                 let spk_sig_bytes: Option<[u8; 64]> = peer_spk_signature.copied();
 
@@ -608,7 +608,7 @@ impl SecureContext {
 
         let sessions = self.sessions.write();
 
-        // FIX: Correct remote_dh selection for Double Ratchet initialisation.
+        // Correct remote_dh selection for Double Ratchet initialisation.
         //
         // For the INITIATOR: the first DH ratchet step uses the peer's signed prekey
         // as the initial remote DH public key — this matches the X3DH output.
@@ -651,7 +651,7 @@ impl SecureContext {
         let session_arc = Arc::new(RwLock::new(session));
         sessions.insert_session(peer_id, session_arc.clone())?;
 
-        // FIX: Do NOT return raw shared_secret to caller - it belongs only to the session.
+        // Do NOT return raw shared_secret to caller - it belongs only to the session.
         // Callers use encrypt_message/decrypt_message via the session.
         Ok(peer_id.to_vec()) // Return peer_id as session identifier
     }
@@ -883,8 +883,8 @@ impl SecureContext {
     }
 
     /// Save the entire context to disk atomically.
-    /// SECURITY FIX §3.1: Persist the storage salt immediately after context creation
-    /// when a db_path is configured. This ensures the salt is never lost between sessions.
+    /// : Persist the storage salt immediately after context creation
+    /// when a db_path is configured, so the salt survives restart.
     /// The salt file is written to `{db_path}.salt` alongside the main storage file.
     fn auto_persist_salt(&self) -> ProtocolResult<()> {
         use std::io::Write;
@@ -896,7 +896,7 @@ impl SecureContext {
         let salt = self.storage_salt.read();
 
         // Check if salt file already exists — do not overwrite an existing salt,
-        // as that would make previously saved data unrecoverable.
+        // as that would make existing data unrecoverable.
         if std::path::Path::new(&salt_path).exists() {
             return Ok(());
         }
@@ -1095,7 +1095,7 @@ impl SessionManager {
         !self.sessions.is_empty() || self.sessions.len() == 0
     }
 
-    /// Iterate over sessions (v3.0.0)
+    /// Iterate over sessions 
     pub fn iter(&self) -> dashmap::iter::Iter<'_, Vec<u8>, Arc<RwLock<DoubleRatchetSession>>> {
         self.sessions.iter()
     }

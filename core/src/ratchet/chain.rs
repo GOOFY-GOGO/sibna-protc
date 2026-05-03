@@ -1,17 +1,12 @@
-#![allow(missing_docs)]
-//! Chain Key Implementation
-//! FIX: derive_key now returns CryptoResult to propagate HMAC errors properly.
-
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use serde::{Serialize, Deserialize};
-use crate::crypto::CryptoResult;
-use crate::crypto::CryptoError;
+use crate::crypto::{CryptoError, CryptoResult};
 
 const MESSAGE_KEY_SEED: u8 = 0x01;
-const CHAIN_KEY_SEED: u8 = 0x02;
-const HEADER_KEY_SEED: u8 = 0x03;
+const CHAIN_KEY_SEED:   u8 = 0x02;
+const HEADER_KEY_SEED:  u8 = 0x03;
 
 #[derive(Serialize, Deserialize)]
 pub struct ChainKey {
@@ -22,7 +17,6 @@ pub struct ChainKey {
     pub reserved_until: u64,
 }
 
-#[allow(missing_docs)]
 impl ChainKey {
     pub const DEFAULT_MAX_MESSAGES: u64 = 1000;
 
@@ -33,11 +27,6 @@ impl ChainKey {
             index: 0,
             created_at,
             max_messages: Self::DEFAULT_MAX_MESSAGES,
-            // SECURITY FIX: reserved_until was 100 by default, causing encrypt()
-            // to silently fail with NonceReservationRequired after the 100th message.
-            // This created a hidden DoS cliff that callers had no warning about.
-            // Set to max_messages so all messages are pre-reserved.
-            // Callers who need explicit reservation can call reserve_nonces() explicitly.
             reserved_until: Self::DEFAULT_MAX_MESSAGES,
         }
     }
@@ -45,63 +34,48 @@ impl ChainKey {
     pub fn with_max_messages(key: [u8; 32], max_messages: u64) -> Self {
         let mut ck = Self::new(key);
         ck.max_messages = max_messages;
+        ck.reserved_until = max_messages;
         ck
     }
 
-    /// FIX: Returns CryptoResult instead of panicking with ? in non-Result fn.
     pub fn next_message_key(&mut self) -> Option<[u8; 32]> {
         if self.index >= self.max_messages { return None; }
         let message_key = self.derive_key(MESSAGE_KEY_SEED).ok()?;
-        let next_key = self.derive_key(CHAIN_KEY_SEED).ok()?;
+        let next_chain  = self.derive_key(CHAIN_KEY_SEED).ok()?;
         self.key.zeroize();
-        self.key = next_key;
+        self.key   = next_chain;
         self.index += 1;
         Some(message_key)
     }
 
+    /// Header encryption is not yet applied on the wire (planned for v3.1).
+    /// The DH public key and message number are currently transmitted in plaintext.
     pub fn derive_header_key(&self) -> Option<[u8; 32]> {
-        // NOTE: Header key derivation is implemented but header encryption is NOT
-        // currently applied to outgoing messages. The DH public key and message
-        // number are transmitted in plaintext inside the RatchetHeader.
-        //
-        // PRIVACY IMPACT: A passive network observer can see:
-        //   - Which ratchet epoch is active (via dh_public field)
-        //   - Message ordering and approximate session age (via message_number)
-        //   - Session linkability across ratchet steps
-        //
-        // This is a known limitation documented for v3.1.0. Implementors who
-        // require metadata protection should add a sealed sender layer above
-        // the ratchet (Sealed Sender is already partially implemented in ws.rs).
         self.derive_key(HEADER_KEY_SEED).ok()
     }
 
-    /// FIX: Proper return type - HMAC::new_from_slice can fail for empty keys.
     fn derive_key(&self, seed: u8) -> CryptoResult<[u8; 32]> {
-        let mut hmac = Hmac::<Sha256>::new_from_slice(&self.key)
+        let mut h = Hmac::<Sha256>::new_from_slice(&self.key)
             .map_err(|_| CryptoError::InvalidKeyLength)?;
-        hmac.update(&[seed]);
-        let result = hmac.finalize();
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&result.into_bytes()[..32]);
-        Ok(key)
+        h.update(&[seed]);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&h.finalize().into_bytes()[..32]);
+        Ok(out)
     }
 
-    pub fn index(&self) -> u64 { self.index }
+    pub fn index(&self) -> u64           { self.index }
+    pub fn clone_key(&self) -> [u8; 32]  { self.key }
+    pub fn remaining_messages(&self) -> u64 { self.max_messages.saturating_sub(self.index) }
 
     pub fn age_secs(&self) -> u64 {
-        let now = crate::crypto::current_timestamp().unwrap_or(self.created_at);
-        now.saturating_sub(self.created_at)
+        crate::crypto::current_timestamp()
+            .unwrap_or(self.created_at)
+            .saturating_sub(self.created_at)
     }
 
     pub fn needs_rotation(&self) -> bool {
         self.index >= self.max_messages || self.age_secs() > 86400
     }
-
-    pub fn remaining_messages(&self) -> u64 {
-        self.max_messages.saturating_sub(self.index)
-    }
-
-    pub fn clone_key(&self) -> [u8; 32] { self.key }
 }
 
 impl Clone for ChainKey {
@@ -119,38 +93,32 @@ impl Clone for ChainKey {
 impl Zeroize for ChainKey {
     fn zeroize(&mut self) {
         self.key.zeroize();
-        self.index = 0;
+        self.index        = 0;
         self.reserved_until = 0;
     }
 }
 
 impl ZeroizeOnDrop for ChainKey {}
-
-impl Drop for ChainKey {
-    fn drop(&mut self) { self.zeroize(); }
-}
+impl Drop for ChainKey { fn drop(&mut self) { self.zeroize(); } }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_chain_key_derivation() {
-        let key = [0x42u8; 32];
-        let mut chain = ChainKey::new(key);
-        let mk1 = chain.next_message_key().unwrap();
-        let mk2 = chain.next_message_key().unwrap();
-        let mk3 = chain.next_message_key().unwrap();
-        assert_ne!(mk1, mk2);
-        assert_ne!(mk2, mk3);
+    fn derivation_produces_distinct_keys() {
+        let mut chain = ChainKey::new([0x42u8; 32]);
+        let k0 = chain.next_message_key().unwrap();
+        let k1 = chain.next_message_key().unwrap();
+        let k2 = chain.next_message_key().unwrap();
+        assert_ne!(k0, k1);
+        assert_ne!(k1, k2);
         assert_eq!(chain.index(), 3);
     }
 
     #[test]
-    fn test_chain_key_limit() {
-        let key = [0x01u8; 32];
-        let mut chain = ChainKey::with_max_messages(key, 3);
-        assert!(chain.next_message_key().is_some());
+    fn exhausted_chain_returns_none() {
+        let mut chain = ChainKey::with_max_messages([0x01u8; 32], 2);
         assert!(chain.next_message_key().is_some());
         assert!(chain.next_message_key().is_some());
         assert!(chain.next_message_key().is_none());

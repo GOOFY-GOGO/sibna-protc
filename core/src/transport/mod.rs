@@ -14,7 +14,7 @@ pub mod relay;
 pub use relay::RelayClient;
 
 /// Unified trait for secure transport layers (TLS, Noise, SOCKS5).
-/// This ensures that Sibna can manage transport-level security directly.
+/// Sibna manages transport-level security at this layer.
 pub trait SecureTransport: Send + Sync {
     /// Send an encrypted Sibna packet over the secure transport.
     fn send_packet(&self, data: &[u8]) -> crate::error::ProtocolResult<()>;

@@ -413,7 +413,7 @@ pub fn validate_key_security(key: &[u8]) -> CryptoResult<()> {
     Ok(())
 }
 
-/// Validate an X25519 public key to prevent Small Subgroup Attacks (v3.0.0)
+/// Validate an X25519 public key to prevent Small Subgroup Attacks 
 ///
 /// Rejects the 8 known low-order points for Curve25519.
 pub fn validate_public_key(pub_key: &[u8; 32]) -> CryptoResult<()> {
@@ -442,22 +442,11 @@ pub mod serde_helpers {
     use serde::{Serializer, Deserializer, Serialize, Deserialize};
     use x25519_dalek::StaticSecret;
 
-    /// Serde helper for Option<StaticSecret>
+    /// X25519 private scalars are ephemeral — they must not survive a save/load cycle.
+    /// Forward secrecy depends on old DH keys being unrecoverable after each ratchet step.
     ///
-    /// SECURITY FIX: The X25519 private scalar MUST NEVER be written to disk.
-    /// The Double Ratchet's forward secrecy guarantee depends on old private keys
-    /// being irrecoverably deleted after each ratchet step. Serializing them to
-    /// disk destroys this guarantee — an attacker with the storage blob can
-    /// recover all past DH keys and decrypt all historical messages.
-    ///
-    /// Serialization policy:
-    ///   - serialize: always write `None` (the private scalar is ephemeral)
-    ///   - deserialize: always return `None` (caller must re-derive or re-generate)
-    ///
-    /// After deserialization, `dh_local` will be `None`. The session will
-    /// generate a fresh DH key pair on the next outgoing ratchet step.
-    /// In-flight messages that require the old private key are handled by the
-    /// skipped_message_keys cache (which stores derived message keys, not scalars).
+    /// serialize → always `None`. deserialize → always `None`.
+    /// After load, `dh_local` is None; the next ratchet step generates a fresh pair.
     pub mod dh_local_serde {
         use super::*;
         pub fn serialize<S>(
@@ -467,8 +456,6 @@ pub mod serde_helpers {
         where
             S: Serializer,
         {
-            // CRITICAL: Always serialize as None.
-            // The private scalar is NEVER written to disk.
             None::<[u8; 32]>.serialize(serializer)
         }
 
@@ -478,14 +465,12 @@ pub mod serde_helpers {
         where
             D: Deserializer<'de>,
         {
-            // Discard whatever was stored (old blobs may contain the scalar).
-            // Always return None — the caller re-generates on next ratchet step.
             let _: Option<[u8; 32]> = Option::deserialize(deserializer)?;
             Ok(None)
         }
     }
 
-    /// Serde helper for parking_lot::RwLock
+        /// Serde helper for parking_lot::RwLock
     pub mod rw_lock_serde {
         use super::*;
         use parking_lot::RwLock;

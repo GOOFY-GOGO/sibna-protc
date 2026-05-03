@@ -201,8 +201,8 @@ pub async fn initiator_handshake(
         bundle.validate()
             .map_err(|e| P2pError::Handshake(format!("bundle validation: {:?}", e)))?;
 
-        // SECURITY FIX: Verify responder identity against the expected key.
-        // Without this check, an active MITM can substitute their own bundle and
+        // Verify responder identity against the expected key.
+        // an active MITM can substitute their own bundle and
         // intercept the X3DH shared secret. The caller must set
         // P2pConfig::expected_peer_identity to the peer's known Ed25519 key.
         // If no expected identity is configured, emit a warning — in production
@@ -210,7 +210,7 @@ pub async fn initiator_handshake(
         if let Some(ref expected) = handshake_cfg.expected_peer_identity {
             if stealth_bundle.responder_ed25519_pub != *expected {
                 return Err(P2pError::Handshake(format!(
-                    "MITM DETECTED: expected peer identity {:?}, got {:?}",
+                    "peer identity mismatch",
                     &expected[..4], &stealth_bundle.responder_ed25519_pub[..4]
                 )));
             }
@@ -222,7 +222,7 @@ pub async fn initiator_handshake(
             );
         }
 
-        // ── Transcript Binding (v3.0.0) ──────────────────────────────────
+        // ── Transcript Binding  ──────────────────────────────────
         let mut hasher = blake3::Hasher::new();
         hasher.update(alice_ephemeral_pub.as_bytes());
         hasher.update(bob_ephemeral_pub.as_bytes());
@@ -401,7 +401,7 @@ pub async fn responder_handshake(
         let stealth_envelope: StealthEnvelope = bincode::decode_from_slice(&envelope_payload, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|e| P2pError::Handshake(format!("malformed stealth envelope: {}", e)))?;
 
-        // ── Transcript Binding (v3.0.0) ──────────────────────────────────
+        // ── Transcript Binding  ──────────────────────────────────
         let mut hasher = blake3::Hasher::new();
         hasher.update(alice_ephemeral_pub.as_bytes());
         hasher.update(bob_ephemeral_pub.as_bytes());

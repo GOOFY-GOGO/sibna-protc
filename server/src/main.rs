@@ -65,8 +65,7 @@ pub struct RuntimeState {
     /// Connected WebSocket clients: identity_key_hex → sender channel
     pub clients: DashMap<String, ws::ClientTx>,
     /// JWT signing secret — zeroized on drop to prevent secret leakage in core dumps
-    /// SECURITY FIX §4.6
-    pub jwt_secret: zeroize::Zeroizing<String>,
+    /    pub jwt_secret: zeroize::Zeroizing<String>,
 }
 
 /// Centralized Auth Extractor — ensures MUST-BE-AUTHENTICATED for protected routes.
@@ -126,7 +125,7 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
     let tree_challenges = db.open_tree("auth_challenges")?;
 
     // JWT secret
-    // SECURITY FIX §3.2: In production, a missing JWT secret is a fatal misconfiguration.
+    // : In production, a missing JWT secret is a fatal misconfiguration.
     // An ephemeral secret invalidates all active sessions on every restart (implicit DoS)
     // and indicates the deployment was not properly secured.
     // Set SIBNA_ENV=production to enforce this. In development/test, a warning suffices.
@@ -246,8 +245,8 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
 
     info!("Sibna Server listening on {}", addr);
 
-    // SECURITY FIX §3.4: Graceful shutdown on SIGTERM/SIGINT.
-    // Without this, an abrupt kill can corrupt sled's append-only log (torn writes),
+    // : Graceful shutdown on SIGTERM/SIGINT.
+    // an abrupt kill can corrupt sled's append-only log (torn writes),
     // leave .tmp atomic-write files, and interrupt in-flight WebSocket sessions.
     let db_for_shutdown = state.db.clone();
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
@@ -284,7 +283,7 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
 // Helpers
 
 fn generate_rate_key(ip: &SocketAddr, identity: &str) -> String {
-    // V8 FIX: DefaultHasher is NOT collision-resistant and is not stable across
+    // DefaultHasher is NOT collision-resistant and is not stable across
     // processes/versions. Two different (IP, identity) pairs can collide and share
     // a rate-limit bucket, allowing one identity to exhaust another's quota.
     // Use plain concatenation with a separator instead — the RateLimiter stores
@@ -424,7 +423,7 @@ async fn fetch_prekey_handler(
                     fetched_bundles_hex.push(hex::encode(&*resort_bytes));
                     using_resort = true;
                     info!("WARN: PreKey starvation for {} — using Last Resort Key!", &root_id[..16]);
-                    // CRITICAL: We DO NOT add it to keys_to_delete. It persists forever.
+                    // We DO NOT add it to keys_to_delete. It persists forever.
                 }
             }
         }
@@ -492,7 +491,7 @@ async fn send_message_handler(
     State(state): State<AppState>,
     Json(req): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
-    // FIX: Use "message_send" rate limit, not "prekey_upload" (wrong operation key).
+    // Use "message_send" rate limit, not "prekey_upload" (wrong operation key).
     if let Err(r) = enforce_rate_limit(&state.rt.limiter, "message_send", &addr, &claims.sub) {
         return r;
     }

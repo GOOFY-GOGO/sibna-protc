@@ -154,9 +154,8 @@ pub enum HandshakeRole {
 }
 
 impl HandshakeRole {
-    /// Deterministically determine the handshake role based on lexicographical 
-    /// comparison of two public keys. This ensures that in simultaneous P2P connections,
-    /// both peers agree on their respective roles.
+    /// Deterministic role assignment via lexicographic key comparison.
+    /// Both peers independently reach the same conclusion without coordination.
     pub fn determine(our_pk: &[u8; 32], peer_pk: &[u8; 32]) -> Self {
         if our_pk < peer_pk {
             Self::Initiator

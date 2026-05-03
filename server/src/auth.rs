@@ -136,7 +136,7 @@ pub async fn prove_handler(
 
     let (stored_challenge_hex, stored_mac_hex, expires_str) = (parts[0], parts[1], parts[2]);
 
-    // V6 FIX: Compute HMAC of the stored challenge, then compare using constant-time
+    // Compute HMAC of the stored challenge, then compare using constant-time
     // byte equality. A non-constant-time string comparison is a timing oracle that
     // lets an attacker recover the expected HMAC byte-by-byte from latency.
     let mut mac = Hmac::<Sha256>::new_from_slice(state.rt.jwt_secret.as_bytes())
@@ -158,7 +158,7 @@ pub async fn prove_handler(
     }
 
     let expected_challenge_hex = stored_challenge_hex;
-    // V9 FIX: Return a 500 if the expiry field cannot be parsed rather than
+    // Return a 500 if the expiry field cannot be parsed rather than
     // silently using 0, which causes a confusing "Challenge expired" error.
     let expires_at: i64 = match expires_str.parse() {
         Ok(v) => v,
@@ -200,7 +200,7 @@ pub async fn prove_handler(
         _ => return (StatusCode::BAD_REQUEST, "Invalid signature hex").into_response(),
     };
 
-    // FIX: Use proper try_into() error handling instead of unwrap_or with a
+    // Use proper try_into() error handling instead of unwrap_or with a
     // zero-array fallback — a zero key would silently pass format checks but
     // would never match, leaking timing information and causing confusing errors.
     let key_arr: [u8; 32] = match key_bytes.as_slice().try_into() {

@@ -7,7 +7,7 @@
 //! The `RelayClient` connects to a Sibna Server via HTTP and WebSocket.
 //! When a proxy is configured, all HTTP traffic is tunneled through SOCKS5.
 //! 
-//! SECURITY FIXES:
+//!
 //! - FIX #1: No information leakage in InternalErrorDetailed (relay.rs line 32)
 //! - FIX #2: No proxy error details exposed (relay.rs line 32)
 //! - FIX #3: No HTTP client build error details exposed (relay.rs line 38)
