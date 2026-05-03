@@ -1,12 +1,2 @@
-# SECURITY FIX §5.6: go.sum was missing from the repository.
-# Without go.sum, `go build` fetches dependencies without verifying their
-# cryptographic hashes — opening a supply chain attack vector where a
-# dependency server could serve tampered code.
-#
-# This file pins the exact hashes for all direct and transitive dependencies.
-# It must be committed to version control and must NEVER be manually edited.
-# Regenerate with: cd sdks/go && go mod tidy
-#
-# Hash generated from: go mod download -json github.com/gorilla/websocket@v1.5.1
 github.com/gorilla/websocket v1.5.1 h1:gmztn0JnHVt9JZquRuzLW3hydkdzmR3WhcmyrsAp+Cg=
 github.com/gorilla/websocket v1.5.1/go.mod h1:x3kM2JMyaluk02fnUJpQuwD2dCS5NDG2ZHL0uE0tcaY=
