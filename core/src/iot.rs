@@ -51,7 +51,7 @@ pub fn compress(data: &[u8]) -> Vec<u8> {
 /// Decompress an LZ4-compressed payload
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     const MAX_DECOMPRESSED_SIZE: usize = 20 * 1024 * 1024; // 20 MB limit
-    
+
     // Check if the prepended size is too large (DoS protection)
     if data.len() > 4 {
         let mut size_bytes = [0u8; 4];
@@ -62,8 +62,7 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
         }
     }
 
-    lz4_flex::decompress_size_prepended(data)
-        .map_err(|_| DecompressError::InvalidData)
+    lz4_flex::decompress_size_prepended(data).map_err(|_| DecompressError::InvalidData)
 }
 
 /// Decompression error
@@ -154,7 +153,7 @@ pub fn session_to_bytes(state: &[u8]) -> Vec<u8> {
     // Prepend magic + version for validation on restore
     let mut out = Vec::with_capacity(4 + state.len());
     out.extend_from_slice(b"SIBN"); // magic
-    out.push(0x01);                 // format version
+    out.push(0x01); // format version
     out.extend_from_slice(state);
     out
 }
@@ -203,19 +202,30 @@ pub fn frame_serial(payload: &[u8]) -> Vec<u8> {
 
 /// Parse a serial frame, return payload if CRC is valid
 pub fn parse_serial_frame(data: &[u8]) -> Result<Vec<u8>, FrameError> {
-    if data.len() < 6 { return Err(FrameError::TooShort); }
-    if data[0] != 0x02 { return Err(FrameError::NoSTX); }
-    if data[data.len() - 1] != 0x03 { return Err(FrameError::NoETX); }
+    if data.len() < 6 {
+        return Err(FrameError::TooShort);
+    }
+    if data[0] != 0x02 {
+        return Err(FrameError::NoSTX);
+    }
+    if data[data.len() - 1] != 0x03 {
+        return Err(FrameError::NoETX);
+    }
 
     let len = ((data[1] as usize) << 8) | data[2] as usize;
-    if data.len() < 3 + len + 3 { return Err(FrameError::IncompleteFrame); }
+    if data.len() < 3 + len + 3 {
+        return Err(FrameError::IncompleteFrame);
+    }
 
     let payload = &data[3..3 + len];
     let received_crc = ((data[3 + len] as u16) << 8) | data[3 + len + 1] as u16;
     let expected_crc = crc16(payload);
 
     if received_crc != expected_crc {
-        return Err(FrameError::CrcMismatch { expected: expected_crc, received: received_crc });
+        return Err(FrameError::CrcMismatch {
+            expected: expected_crc,
+            received: received_crc,
+        });
     }
     Ok(payload.to_vec())
 }

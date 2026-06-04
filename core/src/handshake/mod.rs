@@ -9,10 +9,10 @@ pub mod x3dh;
 pub use builder::*;
 pub use x3dh::*;
 
-use crate::error::{ProtocolResult, ProtocolError};
 use crate::crypto::constant_time_eq;
-use x25519_dalek::{StaticSecret, PublicKey};
-use serde::{Serialize, Deserialize};
+use crate::error::{ProtocolError, ProtocolResult};
+use serde::{Deserialize, Serialize};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 /// Size of ML-KEM-768 (Kyber) public key
 pub const PQ_PUBLIC_KEY_SIZE: usize = 1184;
@@ -40,11 +40,11 @@ pub enum HandshakeError {
 impl std::fmt::Display for HandshakeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidState          => write!(f, "Invalid handshake state"),
-            Self::InvalidKey            => write!(f, "Invalid key material"),
-            Self::Timeout               => write!(f, "Handshake timed out"),
+            Self::InvalidState => write!(f, "Invalid handshake state"),
+            Self::InvalidKey => write!(f, "Invalid key material"),
+            Self::Timeout => write!(f, "Handshake timed out"),
             Self::SignatureVerification => write!(f, "Signature verification failed"),
-            Self::MissingKey            => write!(f, "Missing required key"),
+            Self::MissingKey => write!(f, "Missing required key"),
         }
     }
 }
@@ -54,11 +54,11 @@ impl std::error::Error for HandshakeError {}
 impl From<HandshakeError> for crate::error::ProtocolError {
     fn from(e: HandshakeError) -> Self {
         match e {
-            HandshakeError::InvalidState          => Self::InvalidState,
-            HandshakeError::InvalidKey            => Self::InvalidKey,
-            HandshakeError::Timeout               => Self::Timeout,
+            HandshakeError::InvalidState => Self::InvalidState,
+            HandshakeError::InvalidKey => Self::InvalidKey,
+            HandshakeError::Timeout => Self::Timeout,
             HandshakeError::SignatureVerification => Self::InvalidSignature,
-            HandshakeError::MissingKey            => Self::KeyNotFound,
+            HandshakeError::MissingKey => Self::KeyNotFound,
         }
     }
 }
@@ -89,7 +89,10 @@ impl HandshakeOutput {
     ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression in handshake: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression in handshake: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         Self {
@@ -202,7 +205,7 @@ pub struct PreKeyBundle {
     pub timestamp: u64,
     /// Expiration timestamp
     pub expiration: u64,
-    
+
     /// The ID of this specific device (0 for master device)
     pub device_id: u32,
     /// The Root Identity Key of the user (Ed25519 public key)
@@ -234,14 +237,17 @@ impl PreKeyBundle {
     ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression in handshake: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression in handshake: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         // Expire in 30 days
         let expiration = timestamp + 30 * 86400;
-        
+
         let mut bundle_id = [0u8; 16];
-        use rand_core::{RngCore, OsRng};
+        use rand_core::{OsRng, RngCore};
         OsRng.fill_bytes(&mut bundle_id);
 
         Self {
@@ -297,7 +303,7 @@ impl PreKeyBundle {
         result.extend_from_slice(&self.device_id.to_le_bytes());
         result.extend_from_slice(&self.root_identity_key);
         result.extend_from_slice(&self.device_signature);
-        
+
         #[cfg(feature = "pqc")]
         {
             result.push(self.pq_signed_prekey.is_some() as u8);
@@ -314,8 +320,8 @@ impl PreKeyBundle {
 
     /// Validate the prekey bundle
     pub fn validate(&self) -> ProtocolResult<()> {
-        use ed25519_dalek::{VerifyingKey, Signature, Verifier};
-        
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
         // Check keys are not all zeros
         if self.identity_key.iter().all(|&b| b == 0) {
             return Err(ProtocolError::InvalidKey);
@@ -325,29 +331,32 @@ impl PreKeyBundle {
         }
 
         // Verify signed_prekey signature
-        let verifying_key = VerifyingKey::from_bytes(&self.identity_key)
-            .map_err(|_| ProtocolError::InvalidKey)?;
+        let verifying_key =
+            VerifyingKey::from_bytes(&self.identity_key).map_err(|_| ProtocolError::InvalidKey)?;
         let spk_signature = Signature::from_bytes(&self.signature);
 
-        verifying_key.verify(&self.signed_prekey, &spk_signature)
+        verifying_key
+            .verify(&self.signed_prekey, &spk_signature)
             .map_err(|_| ProtocolError::InvalidSignature)?;
 
         // Verify full bundle signature
         let bundle_sig = Signature::from_bytes(&self.bundle_signature);
         let payload = self.signing_bytes();
-        verifying_key.verify(&payload, &bundle_sig)
+        verifying_key
+            .verify(&payload, &bundle_sig)
             .map_err(|_| ProtocolError::InvalidSignature)?;
 
         // Verify device linking signature by Root Key
         let root_key = VerifyingKey::from_bytes(&self.root_identity_key)
             .map_err(|_| ProtocolError::InvalidKey)?;
         let dev_sig = Signature::from_bytes(&self.device_signature);
-        
+
         let mut dev_payload = Vec::with_capacity(36);
         dev_payload.extend_from_slice(&self.identity_key);
         dev_payload.extend_from_slice(&self.device_id.to_le_bytes());
-        
-        root_key.verify(&dev_payload, &dev_sig)
+
+        root_key
+            .verify(&dev_payload, &dev_sig)
             .map_err(|_| ProtocolError::InvalidSignature)?;
 
         // Verify PQ prekey signature if present
@@ -358,7 +367,8 @@ impl PreKeyBundle {
             }
             if let Some(sig) = self.pq_signed_prekey_signature {
                 let sig = ed25519_dalek::Signature::from_bytes(&sig);
-                verifying_key.verify(pk, &sig)
+                verifying_key
+                    .verify(pk, &sig)
                     .map_err(|_| ProtocolError::InvalidSignature)?;
             } else {
                 return Err(ProtocolError::InvalidSignature);
@@ -402,18 +412,23 @@ impl PreKeyBundle {
 
         let mut offset = 0;
         let mut identity_key = [0u8; 32];
-        identity_key.copy_from_slice(&data[offset..offset+32]); offset += 32;
+        identity_key.copy_from_slice(&data[offset..offset + 32]);
+        offset += 32;
 
         let mut signed_prekey = [0u8; 32];
-        signed_prekey.copy_from_slice(&data[offset..offset+32]); offset += 32;
+        signed_prekey.copy_from_slice(&data[offset..offset + 32]);
+        offset += 32;
 
         let mut signature = [0u8; 64];
-        signature.copy_from_slice(&data[offset..offset+64]); offset += 64;
+        signature.copy_from_slice(&data[offset..offset + 64]);
+        offset += 64;
 
-        let has_onetime = data[offset] != 0; offset += 1;
+        let has_onetime = data[offset] != 0;
+        offset += 1;
         let onetime_prekey = if has_onetime {
             let mut opk = [0u8; 32];
-            opk.copy_from_slice(&data[offset..offset+32]); offset += 32;
+            opk.copy_from_slice(&data[offset..offset + 32]);
+            offset += 32;
             Some(opk)
         } else {
             None
@@ -424,26 +439,45 @@ impl PreKeyBundle {
         }
 
         let mut bundle_id = [0u8; 16];
-        bundle_id.copy_from_slice(&data[offset..offset+16]); offset += 16;
+        bundle_id.copy_from_slice(&data[offset..offset + 16]);
+        offset += 16;
 
-        let timestamp = u64::from_le_bytes(data[offset..offset+8].try_into().map_err(|_| ProtocolError::InvalidMessage)?); offset += 8;
-        let expiration = u64::from_le_bytes(data[offset..offset+8].try_into().map_err(|_| ProtocolError::InvalidMessage)?); offset += 8;
+        let timestamp = u64::from_le_bytes(
+            data[offset..offset + 8]
+                .try_into()
+                .map_err(|_| ProtocolError::InvalidMessage)?,
+        );
+        offset += 8;
+        let expiration = u64::from_le_bytes(
+            data[offset..offset + 8]
+                .try_into()
+                .map_err(|_| ProtocolError::InvalidMessage)?,
+        );
+        offset += 8;
 
         if data.len() < offset + 4 + 32 + 64 {
             return Err(ProtocolError::InvalidMessage);
         }
 
-        let device_id = u32::from_le_bytes(data[offset..offset+4].try_into().map_err(|_| ProtocolError::InvalidMessage)?); offset += 4;
-        
+        let device_id = u32::from_le_bytes(
+            data[offset..offset + 4]
+                .try_into()
+                .map_err(|_| ProtocolError::InvalidMessage)?,
+        );
+        offset += 4;
+
         let mut root_identity_key = [0u8; 32];
-        root_identity_key.copy_from_slice(&data[offset..offset+32]); offset += 32;
+        root_identity_key.copy_from_slice(&data[offset..offset + 32]);
+        offset += 32;
 
         let mut device_signature = [0u8; 64];
-        device_signature.copy_from_slice(&data[offset..offset+64]); offset += 64;
+        device_signature.copy_from_slice(&data[offset..offset + 64]);
+        offset += 64;
 
         #[cfg(feature = "pqc")]
         let (pq_signed_prekey, pq_signed_prekey_signature) = if offset < data.len() {
-            let has_pq = data[offset] != 0; offset += 1;
+            let has_pq = data[offset] != 0;
+            offset += 1;
             if has_pq && offset + 1184 + 64 <= data.len() {
                 let mut pq_pk = vec![0u8; 1184];
                 pq_pk.copy_from_slice(&data[offset..offset + 1184]);
@@ -454,7 +488,7 @@ impl PreKeyBundle {
                 (Some(pq_pk), Some(pq_sig))
             } else {
                 // BUG FIX: Downgrade Protection
-                // If the PQC feature is enabled, we REQUIRE the peer to provide a PQC bundle 
+                // If the PQC feature is enabled, we REQUIRE the peer to provide a PQC bundle
                 // if they are on a compatible version.
                 return Err(ProtocolError::InvalidMessage);
             }
@@ -462,7 +496,7 @@ impl PreKeyBundle {
             // No PQC data present. If we enforce PQC, this is a failure.
             return Err(ProtocolError::InvalidMessage);
         };
-#[cfg(not(feature = "pqc"))]
+        #[cfg(not(feature = "pqc"))]
         let (pq_signed_prekey, pq_signed_prekey_signature) = (None, None);
 
         Ok(Self {
@@ -504,7 +538,8 @@ impl HandshakeMetrics {
         self.successful += 1;
         self.total += 1;
         // Update running average
-        self.avg_time_ms = (self.avg_time_ms * (self.total - 1) as f64 + duration_ms) / self.total as f64;
+        self.avg_time_ms =
+            (self.avg_time_ms * (self.total - 1) as f64 + duration_ms) / self.total as f64;
     }
 
     /// Record a failed handshake
@@ -525,7 +560,7 @@ impl HandshakeMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{SigningKey, Signer};
+    use ed25519_dalek::{Signer, SigningKey};
     use rand_core::OsRng;
 
     #[test]
@@ -533,11 +568,7 @@ mod tests {
         let ephemeral = StaticSecret::random_from_rng(&mut OsRng);
         let ephemeral_public = PublicKey::from(&ephemeral);
 
-        let output = HandshakeOutput::new(
-            [0x42u8; 32],
-            ephemeral,
-            ephemeral_public,
-        );
+        let output = HandshakeOutput::new([0x42u8; 32], ephemeral, ephemeral_public);
 
         assert!(output.validate().is_ok());
     }
@@ -585,7 +616,9 @@ mod tests {
             device_signature,
         );
 
-        bundle.sign_bundle(|data| Ok(signing_key.sign(data).to_bytes())).unwrap();
+        bundle
+            .sign_bundle(|data| Ok(signing_key.sign(data).to_bytes()))
+            .unwrap();
 
         assert!(bundle.validate().is_ok());
     }

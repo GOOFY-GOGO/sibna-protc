@@ -4,23 +4,18 @@
 //! It owns the TCP listener, the `SecureContext`, and a live `PreKeyBundle`
 //! that it hands to connecting peers during the P2P handshake.
 
-use std::sync::Arc;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use x25519_dalek::StaticSecret;
 use zeroize::Zeroizing;
 
-use crate::{
-    SecureContext,
-    keystore::SignedPreKey,
-    handshake::PreKeyBundle,
-};
 use super::{
-    P2pConfig, P2pError, P2pResult,
-    handshake::{P2pHandshakeConfig, initiator_handshake, responder_handshake},
+    handshake::{initiator_handshake, responder_handshake, P2pHandshakeConfig},
     peer::Peer,
-    transport,
+    transport, P2pConfig, P2pError, P2pResult,
 };
+use crate::{handshake::PreKeyBundle, keystore::SignedPreKey, SecureContext};
 
 /// Top-level P2P node.
 ///
@@ -67,21 +62,26 @@ impl P2pNode {
         let ctx = Arc::new(ctx);
 
         // Make sure the SecureContext has an identity key.
-        let identity = ctx.get_identity()
+        let identity = ctx
+            .get_identity()
             .map_err(|e| P2pError::Crypto(format!("get_identity: {:?}", e)))?;
 
         // Generate a fresh signed prekey and one OPK for this node's lifetime.
         let spk = SignedPreKey::generate(1, &identity)
             .map_err(|e| P2pError::Crypto(format!("gen spk: {:?}", e)))?;
         let spk_public = spk.public;
-        let spk_secret = spk.secret.clone()
+        let spk_secret = spk
+            .secret
+            .clone()
             .ok_or_else(|| P2pError::Crypto("spk secret not available".into()))?;
-        
+
         #[cfg(feature = "pqc")]
         let pq_sk = spk.pq_secret;
         #[cfg(feature = "pqc")]
         let pq_pk = spk.pq_public;
-        let spk_sig: [u8; 64] = spk.signature.as_slice()
+        let spk_sig: [u8; 64] = spk
+            .signature
+            .as_slice()
             .try_into()
             .map_err(|_| P2pError::Crypto("bad spk signature length".into()))?;
 
@@ -101,35 +101,36 @@ impl P2pNode {
             identity.ed25519_public,
             spk_public,
             spk_sig,
-            None,                      // no one-time prekey in P2P mode
-            0,                         // device_id = 0 (master)
-            identity.ed25519_public,   // root key = self for standalone node
+            None,                    // no one-time prekey in P2P mode
+            0,                       // device_id = 0 (master)
+            identity.ed25519_public, // root key = self for standalone node
             device_sig,
         );
 
         #[cfg(feature = "pqc")]
         if let Some(pk) = pq_pk {
-            let pq_sig = identity.sign(&pk)
+            let pq_sig = identity
+                .sign(&pk)
                 .map_err(|e| P2pError::Crypto(format!("sign pq prekey: {:?}", e)))?;
             bundle = bundle.with_pq_prekey(pk, pq_sig);
         }
 
         // Sign the full bundle.
-        bundle.sign_bundle(|data| {
-            identity.sign(data)
-                .map_err(|e| {
+        bundle
+            .sign_bundle(|data| {
+                identity.sign(data).map_err(|e| {
                     // F-04: log details internally, return generic error to caller
                     tracing::warn!("P2P_BUNDLE_SIGN_FAILED: {:?}", e);
                     crate::error::ProtocolError::InternalError
                 })
-        }).map_err(|e| {
-            tracing::warn!("P2P_SIGN_BUNDLE_ERR: {:?}", e);
-            P2pError::Crypto("bundle signing failed".to_string())
-        })?;
+            })
+            .map_err(|e| {
+                tracing::warn!("P2P_SIGN_BUNDLE_ERR: {:?}", e);
+                P2pError::Crypto("bundle signing failed".to_string())
+            })?;
 
         // Bind the TCP listener.
-        let listener = transport::listen(config.bind_addr)
-            .await?;
+        let listener = transport::listen(config.bind_addr).await?;
 
         let hs_cfg = P2pHandshakeConfig {
             timeout_secs: config.handshake_timeout_secs,
@@ -147,7 +148,7 @@ impl P2pNode {
         // Initialize mDNS discovery if enabled.
         let discovery = if config.enable_mdns {
             let mut discover_addr = listener.local_addr().unwrap_or(config.bind_addr);
-            
+
             // If we found a public address via NAT traversal, prefer it for broad reachability
             if let Some(ref n) = nat {
                 if let Some(pub_addr) = n.public_addr {
@@ -157,7 +158,7 @@ impl P2pNode {
 
             Some(super::discovery::MdnsDiscovery::new(
                 discover_addr,
-                config.node_name.as_deref()
+                config.node_name.as_deref(),
             )?)
         } else {
             None
@@ -184,7 +185,9 @@ impl P2pNode {
         // lifetime of the node. local_addr() only fails if the socket is not bound,
         // which cannot happen here. The expect() is acceptable as a programming-error
         // guard, not a runtime failure path.
-        self.listener.local_addr().expect("listener has addr — invariant: bound in new()")
+        self.listener
+            .local_addr()
+            .expect("listener has addr — invariant: bound in new()")
     }
 
     /// Export this node's `PreKeyBundle` as bytes.
@@ -193,11 +196,15 @@ impl P2pNode {
     }
 
     /// Browse the local network for other active P2P nodes.
-    pub fn browse_peers(&self) -> P2pResult<tokio::sync::mpsc::Receiver<super::discovery::DiscoveredPeer>> {
+    pub fn browse_peers(
+        &self,
+    ) -> P2pResult<tokio::sync::mpsc::Receiver<super::discovery::DiscoveredPeer>> {
         if let Some(ref d) = self.discovery {
             d.browse_peers()
         } else {
-            Err(P2pError::InvalidMessage("mDNS is not enabled on this node".to_string()))
+            Err(P2pError::InvalidMessage(
+                "mDNS is not enabled on this node".to_string(),
+            ))
         }
     }
 
@@ -210,7 +217,8 @@ impl P2pNode {
     pub fn import_bundle(bytes: &[u8]) -> P2pResult<PreKeyBundle> {
         let bundle = PreKeyBundle::from_bytes(bytes)
             .map_err(|e| P2pError::InvalidMessage(format!("malformed bundle: {:?}", e)))?;
-        bundle.validate()
+        bundle
+            .validate()
             .map_err(|e| P2pError::Handshake(format!("bundle invalid: {:?}", e)))?;
         Ok(bundle)
     }
@@ -222,13 +230,18 @@ impl P2pNode {
             self.config.proxy.as_deref(),
             false,
             self.hs_cfg.max_frame_bytes,
-        ).await?;
-        let remote_addr: SocketAddr = addr.parse()
-            .map_err(|_| P2pError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput, "invalid address",
-            )))?;
+        )
+        .await?;
+        let remote_addr: SocketAddr = addr.parse().map_err(|_| {
+            P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid address",
+            ))
+        })?;
 
-        let identity = self.ctx.get_identity()
+        let identity = self
+            .ctx
+            .get_identity()
             .map_err(|e| P2pError::Crypto(format!("get_identity: {:?}", e)))?;
 
         let protocol_cfg = self.ctx.config().clone();
@@ -239,16 +252,20 @@ impl P2pNode {
             protocol_cfg,
             &self.hs_cfg,
             *self.ctx.device_id(),
-        ).await?;
+        )
+        .await?;
 
         Ok(Peer::new(peer_id, stream, session, remote_addr))
     }
 
     /// Wait for an incoming connection and perform the P2P X3DH handshake as **responder**.
     pub async fn accept(&self) -> P2pResult<Peer> {
-        let (mut stream, remote_addr) = transport::accept(&self.listener, self.hs_cfg.max_frame_bytes).await?;
+        let (mut stream, remote_addr) =
+            transport::accept(&self.listener, self.hs_cfg.max_frame_bytes).await?;
 
-        let identity = self.ctx.get_identity()
+        let identity = self
+            .ctx
+            .get_identity()
             .map_err(|e| P2pError::Crypto(format!("get_identity: {:?}", e)))?;
 
         let protocol_cfg = self.ctx.config().clone();
@@ -265,7 +282,8 @@ impl P2pNode {
             protocol_cfg,
             &self.hs_cfg,
             *self.ctx.device_id(),
-        ).await?;
+        )
+        .await?;
 
         Ok(Peer::new(peer_id, stream, session, remote_addr))
     }

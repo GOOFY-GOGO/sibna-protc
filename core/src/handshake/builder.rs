@@ -3,12 +3,12 @@
 //!
 //! Builder pattern for constructing X3DH handshakes.
 
-use super::{HandshakeOutput, HandshakeRole, HandshakeError};
+use super::{HandshakeError, HandshakeOutput, HandshakeRole};
+use crate::crypto::SecureRandom;
 use crate::error::{ProtocolError, ProtocolResult};
 use crate::keystore::KeyStore;
-use crate::crypto::SecureRandom;
 use crate::Config;
-use x25519_dalek::{StaticSecret, PublicKey};
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Handshake Builder
@@ -101,7 +101,6 @@ impl HandshakeBuilder {
         self.role = Some(role);
         self
     }
-
 
     /// Set peer identity key
     pub fn with_peer_identity_key(mut self, key: &[u8]) -> ProtocolResult<Self> {
@@ -212,7 +211,7 @@ impl HandshakeBuilder {
         // Validate required fields
         let role = self.role.ok_or(ProtocolError::InvalidState)?;
         let keystore = self.keystore.ok_or(ProtocolError::InvalidState)?;
-        
+
         Ok(X3dhHandshake {
             _config: self.config,
             keystore,
@@ -322,7 +321,10 @@ impl X3dhHandshake {
 
         // Perform X3DH initiator
         let mut x3dh_result = x3dh_initiator_v3(
-            our_identity.x25519_secret.as_ref().ok_or(ProtocolError::KeyNotFound)?,
+            our_identity
+                .x25519_secret
+                .as_ref()
+                .ok_or(ProtocolError::KeyNotFound)?,
             &ephemeral_secret,
             &peer_ik_pub,
             &peer_spk_pub,
@@ -341,7 +343,8 @@ impl X3dhHandshake {
             x3dh_result.shared_secret,
             ephemeral_secret,
             ephemeral_public,
-        ).with_associated_data(ad);
+        )
+        .with_associated_data(ad);
 
         #[cfg(feature = "pqc")]
         if let Some(ct) = x3dh_result.pq_ciphertext.take() {
@@ -360,7 +363,7 @@ impl X3dhHandshake {
         // Get our keys
         let our_identity = self.keystore.get_identity_keypair()?;
         let mut our_signed_prekey = self.keystore.get_signed_prekey()?;
-        
+
         // Get peer public keys
         let peer_ik = self.peer_identity_key.ok_or(ProtocolError::InvalidState)?;
         let peer_ek = self.peer_ephemeral_key.ok_or(ProtocolError::InvalidState)?;
@@ -382,8 +385,14 @@ impl X3dhHandshake {
 
         // Perform X3DH responder
         let x3dh_result = x3dh_responder_v3(
-            our_identity.x25519_secret.as_ref().ok_or(ProtocolError::KeyNotFound)?,
-            our_signed_prekey.secret.as_ref().ok_or(ProtocolError::KeyNotFound)?,
+            our_identity
+                .x25519_secret
+                .as_ref()
+                .ok_or(ProtocolError::KeyNotFound)?,
+            our_signed_prekey
+                .secret
+                .as_ref()
+                .ok_or(ProtocolError::KeyNotFound)?,
             our_opk.as_ref(),
             &peer_ik_pub,
             &peer_ek_pub,
@@ -412,7 +421,8 @@ impl X3dhHandshake {
             x3dh_result.shared_secret,
             std::mem::replace(&mut ephemeral, x25519_dalek::StaticSecret::from([0u8; 32])),
             PublicKey::from(&ephemeral),
-        ).with_associated_data(ad);
+        )
+        .with_associated_data(ad);
 
         // Zeroize the local SPK scalar as soon as we are done with it.
         // The X3DH computation already used it; we no longer need it after
@@ -428,16 +438,16 @@ impl X3dhHandshake {
     /// Build associated data for session binding
     fn build_associated_data(&self, our_key: &[u8; 32], peer_key: &[u8; 32]) -> Vec<u8> {
         let mut ad = Vec::with_capacity(64 + self.prologue.as_ref().map(|p| p.len()).unwrap_or(0));
-        
+
         // Add identity keys
         ad.extend_from_slice(our_key);
         ad.extend_from_slice(peer_key);
-        
+
         // Add prologue if present
         if let Some(ref prologue) = self.prologue {
             ad.extend_from_slice(prologue);
         }
-        
+
         ad
     }
 }
@@ -482,26 +492,27 @@ mod tests {
 
     #[test]
     fn test_builder_with_role() {
-        let builder = HandshakeBuilder::new()
-            .with_role(HandshakeRole::Initiator);
-        
+        let builder = HandshakeBuilder::new().with_role(HandshakeRole::Initiator);
+
         assert_eq!(builder.role, Some(HandshakeRole::Initiator));
     }
 
     #[test]
     fn test_builder_with_initiator() {
-        let builder = HandshakeBuilder::new()
-            .with_role(HandshakeRole::Initiator);
-        
+        let builder = HandshakeBuilder::new().with_role(HandshakeRole::Initiator);
+
         assert_eq!(builder.role, Some(HandshakeRole::Initiator));
     }
 
     #[test]
     fn test_builder_with_keys() {
         let builder = HandshakeBuilder::new()
-            .with_peer_identity_key(&[0x42u8; 32]).unwrap()
-            .with_peer_signed_prekey(&[0x24u8; 32]).unwrap()
-            .with_peer_onetime_prekey(&[0xABu8; 32]).unwrap();
+            .with_peer_identity_key(&[0x42u8; 32])
+            .unwrap()
+            .with_peer_signed_prekey(&[0x24u8; 32])
+            .unwrap()
+            .with_peer_onetime_prekey(&[0xABu8; 32])
+            .unwrap();
 
         assert!(builder.peer_identity_key.is_some());
         assert!(builder.peer_signed_prekey.is_some());
@@ -510,9 +521,8 @@ mod tests {
 
     #[test]
     fn test_builder_invalid_key_length() {
-        let result = HandshakeBuilder::new()
-            .with_peer_identity_key(&[0x42u8; 16]);
-        
+        let result = HandshakeBuilder::new().with_peer_identity_key(&[0x42u8; 16]);
+
         assert!(result.is_err());
     }
 }

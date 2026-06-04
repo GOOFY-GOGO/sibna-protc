@@ -6,11 +6,11 @@
 //! `tokio::sync::Mutex` is used (not `parking_lot::Mutex`) because the guard
 //! must be held across `.await` points where `SinkExt`/`StreamExt` are called.
 
-use tokio::sync::Mutex;
 use futures::{SinkExt, StreamExt};
+use tokio::sync::Mutex;
 
+use super::{transport::FramedStream, P2pError, P2pResult};
 use crate::ratchet::DoubleRatchetSession;
-use super::{P2pError, P2pResult, transport::FramedStream};
 
 /// A fully authenticated, encrypted connection to a remote peer.
 ///
@@ -71,13 +71,15 @@ impl Peer {
     /// - `P2pError::Io` — TCP write error
     pub async fn send_message(&self, plaintext: &[u8]) -> P2pResult<()> {
         // Encrypt first (no lock held)
-        let ciphertext = self.session
+        let ciphertext = self
+            .session
             .encrypt(plaintext, b"p2p-message")
             .map_err(|e| P2pError::Crypto(format!("encrypt: {:?}", e)))?;
 
         // Then send (lock held only across this single async write)
         let mut stream = self.stream.lock().await;
-        stream.send(bytes::Bytes::from(ciphertext))
+        stream
+            .send(bytes::Bytes::from(ciphertext))
             .await
             .map_err(|e: std::io::Error| P2pError::Io(e))
     }
@@ -93,7 +95,9 @@ impl Peer {
     pub async fn recv_message(&self) -> P2pResult<Vec<u8>> {
         let ciphertext = {
             let mut stream = self.stream.lock().await;
-            stream.next().await
+            stream
+                .next()
+                .await
                 .ok_or(P2pError::Disconnected)?
                 .map_err(|e: std::io::Error| P2pError::Framing(e.to_string()))?
         };

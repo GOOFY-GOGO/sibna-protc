@@ -6,19 +6,22 @@
 //! - skip_message_keys: all unwrap() replaced with proper ? propagation
 //! - perform_handshake: shared_secret no longer returned to caller
 
-use super::{ChainKey, DoubleRatchetState, RatchetHeader, RatchetMessage, RatchetConfig, ENCRYPTED_HEADER_SIZE};
-use super::super::crypto::{Encryptor, SecureRandom, RatchetKdf};
+use super::super::crypto::{Encryptor, RatchetKdf, SecureRandom};
 use super::super::error::{ProtocolError, ProtocolResult};
-use super::super::validation::{validate_message, validate_associated_data};
 use super::super::handshake::HandshakeRole;
+use super::super::validation::{validate_associated_data, validate_message};
+use super::{
+    ChainKey, DoubleRatchetState, RatchetConfig, RatchetHeader, RatchetMessage,
+    ENCRYPTED_HEADER_SIZE,
+};
 use crate::Config;
-use x25519_dalek::{StaticSecret, PublicKey};
 use hkdf::Hkdf;
-use sha2::Sha256;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use serde::{Serialize, Deserialize};
 
 /// Double Ratchet Session - manages state and cryptographic operations for a secure channel.
 #[derive(Serialize, Deserialize)]
@@ -36,9 +39,9 @@ pub struct DoubleRatchetSession {
 #[allow(missing_docs)]
 impl DoubleRatchetSession {
     pub fn new(config: Config) -> ProtocolResult<Self> {
-        let mut rng = crate::crypto::SecureRandom::new()
-            .map_err(|_| ProtocolError::InternalError)?;
-        
+        let mut rng =
+            crate::crypto::SecureRandom::new().map_err(|_| ProtocolError::InternalError)?;
+
         let mut dh_local_bytes = [0u8; 32];
         rng.fill_bytes(&mut dh_local_bytes);
         let dh_local = StaticSecret::from(dh_local_bytes);
@@ -156,28 +159,39 @@ impl DoubleRatchetSession {
         let mut state = self.state.write();
 
         let mut rotated = false;
-        if state.sending_chain.as_ref().map(|c| c.needs_rotation()).unwrap_or(true) {
+        if state
+            .sending_chain
+            .as_ref()
+            .map(|c| c.needs_rotation())
+            .unwrap_or(true)
+        {
             self.perform_dh_ratchet(&mut state)?;
             rotated = true;
         }
 
-        let dh_pub = state.dh_local.as_ref()
+        let dh_pub = state
+            .dh_local
+            .as_ref()
             .map(PublicKey::from)
             .ok_or(ProtocolError::InvalidState)?;
 
-        let sending_chain = state.sending_chain.as_mut()
+        let sending_chain = state
+            .sending_chain
+            .as_mut()
             .ok_or(ProtocolError::InvalidState)?;
 
         // Derive header key from sending chain BEFORE advancing (next_message_key advances chain)
-        let header_key = sending_chain.derive_header_key()
+        let header_key = sending_chain
+            .derive_header_key()
             .ok_or(ProtocolError::InvalidState)?;
 
-        // Nonce Safety Check 
+        // Nonce Safety Check
         if sending_chain.index >= sending_chain.reserved_until {
             return Err(ProtocolError::NonceReservationRequired);
         }
 
-        let message_key = sending_chain.next_message_key()
+        let message_key = sending_chain
+            .next_message_key()
             .ok_or(ProtocolError::InvalidState)?;
 
         let timestamp = std::time::SystemTime::now()
@@ -197,15 +211,15 @@ impl DoubleRatchetSession {
         // initial_message_number=0, not u64::MAX. The Encryptor's counter
         // tracks its own sequence; using MAX was a logic error that could cause
         // wrapping issues and bypasses replay detection on first message.
-        let mut encryptor = Encryptor::new(&message_key, 0)
-            .map_err(ProtocolError::from)?;
+        let mut encryptor = Encryptor::new(&message_key, 0).map_err(ProtocolError::from)?;
 
         let header_bytes = header.to_bytes();
         let mut final_ad = Vec::with_capacity(associated_data.len() + header_bytes.len());
         final_ad.extend_from_slice(associated_data);
         final_ad.extend_from_slice(&header_bytes);
 
-        let ciphertext = encryptor.encrypt_message(plaintext, &final_ad)
+        let ciphertext = encryptor
+            .encrypt_message(plaintext, &final_ad)
             .map_err(ProtocolError::from)?;
 
         let message = RatchetMessage { header, ciphertext };
@@ -233,7 +247,9 @@ impl DoubleRatchetSession {
         // v3.1: Try to decrypt as encrypted header
         // First, we need to figure out which header key to use.
         // If the message triggers a DH ratchet, we need to do the ratchet first.
-        let ratchet_message = if self.config.enable_header_encryption && message.len() >= ENCRYPTED_HEADER_SIZE + 29 {
+        let ratchet_message = if self.config.enable_header_encryption
+            && message.len() >= ENCRYPTED_HEADER_SIZE + 29
+        {
             let mut decrypted = None;
 
             // Try receiving chain header key first (most common case)
@@ -280,8 +296,12 @@ impl DoubleRatchetSession {
         let key_tuple = (header.dh_public, header.message_number);
         if let Some(&mk) = state.skipped_message_keys.get(&key_tuple) {
             return self.decrypt_with_key(
-                &mk, &ratchet_message.ciphertext, associated_data,
-                &header, &mut state, &key_tuple,
+                &mk,
+                &ratchet_message.ciphertext,
+                associated_data,
+                &header,
+                &mut state,
+                &key_tuple,
             );
         }
 
@@ -289,7 +309,9 @@ impl DoubleRatchetSession {
             let mut state_clone = state.clone();
             let key_tuple_clone = (header.dh_public, header.message_number);
 
-            let needs_ratchet = state_clone.dh_remote.as_ref()
+            let needs_ratchet = state_clone
+                .dh_remote
+                .as_ref()
                 .map(|p| !crate::crypto::constant_time_eq(p.as_bytes(), remote_dh.as_bytes()))
                 .unwrap_or(true);
 
@@ -304,17 +326,25 @@ impl DoubleRatchetSession {
             self.skip_message_keys(&mut state_clone, header.message_number)?;
 
             let mk = {
-                let receiving_chain = state_clone.receiving_chain.as_mut()
+                let receiving_chain = state_clone
+                    .receiving_chain
+                    .as_mut()
                     .ok_or(ProtocolError::InvalidState)?;
                 if header.message_number < receiving_chain.index() {
                     return Err(ProtocolError::ReplayAttackDetected);
                 }
-                receiving_chain.next_message_key().ok_or(ProtocolError::InvalidState)?
+                receiving_chain
+                    .next_message_key()
+                    .ok_or(ProtocolError::InvalidState)?
             };
 
             let decrypt_result = self.decrypt_with_key(
-                &mk, &ratchet_message.ciphertext, associated_data,
-                &header, &mut state_clone, &key_tuple_clone,
+                &mk,
+                &ratchet_message.ciphertext,
+                associated_data,
+                &header,
+                &mut state_clone,
+                &key_tuple_clone,
             );
 
             if decrypt_result.is_ok() {
@@ -335,8 +365,12 @@ impl DoubleRatchetSession {
     }
 
     fn decrypt_with_key(
-        &self, key: &[u8; 32], ciphertext: &[u8], associated_data: &[u8],
-        header: &RatchetHeader, state: &mut DoubleRatchetState,
+        &self,
+        key: &[u8; 32],
+        ciphertext: &[u8],
+        associated_data: &[u8],
+        header: &RatchetHeader,
+        state: &mut DoubleRatchetState,
         key_tuple: &([u8; 32], u64),
     ) -> ProtocolResult<Vec<u8>> {
         // initial_message_number=0 (consistent with encrypt)
@@ -347,7 +381,9 @@ impl DoubleRatchetSession {
         full_ad.extend_from_slice(associated_data);
         full_ad.extend_from_slice(&header_bytes);
 
-        let result = encryptor.decrypt_message(ciphertext, &full_ad).map_err(ProtocolError::from);
+        let result = encryptor
+            .decrypt_message(ciphertext, &full_ad)
+            .map_err(ProtocolError::from);
 
         if result.is_ok() {
             state.skipped_message_keys.remove(key_tuple);
@@ -357,10 +393,17 @@ impl DoubleRatchetSession {
     }
 
     /// All unwrap() replaced with ? operator - no more panics on malformed messages.
-    fn skip_message_keys(&self, state: &mut DoubleRatchetState, until_n: u64) -> ProtocolResult<()> {
-        if state.receiving_chain.is_none() { return Ok(()); }
+    fn skip_message_keys(
+        &self,
+        state: &mut DoubleRatchetState,
+        until_n: u64,
+    ) -> ProtocolResult<()> {
+        if state.receiving_chain.is_none() {
+            return Ok(());
+        }
 
-        let current_index = state.receiving_chain
+        let current_index = state
+            .receiving_chain
             .as_ref()
             .ok_or(ProtocolError::InvalidState)?
             .index();
@@ -369,12 +412,15 @@ impl DoubleRatchetSession {
             return Err(ProtocolError::MaxSkippedMessagesExceeded);
         }
 
-        while state.receiving_chain
+        while state
+            .receiving_chain
             .as_ref()
             .ok_or(ProtocolError::InvalidState)?
-            .index() < until_n
+            .index()
+            < until_n
         {
-            let mk = state.receiving_chain
+            let mk = state
+                .receiving_chain
                 .as_mut()
                 .ok_or(ProtocolError::InvalidState)?
                 .next_message_key()
@@ -382,10 +428,12 @@ impl DoubleRatchetSession {
 
             let dh_remote = state.dh_remote.ok_or(ProtocolError::InvalidState)?;
 
-            let key_index = state.receiving_chain
+            let key_index = state
+                .receiving_chain
                 .as_ref()
                 .ok_or(ProtocolError::InvalidState)?
-                .index() - 1;
+                .index()
+                - 1;
 
             if !state.add_skipped_key(*dh_remote.as_bytes(), key_index, mk) {
                 return Err(ProtocolError::MaxSkippedMessagesExceeded);
@@ -394,7 +442,11 @@ impl DoubleRatchetSession {
         Ok(())
     }
 
-    fn dh_ratchet(&self, state: &mut DoubleRatchetState, remote_dh: PublicKey) -> ProtocolResult<()> {
+    fn dh_ratchet(
+        &self,
+        state: &mut DoubleRatchetState,
+        remote_dh: PublicKey,
+    ) -> ProtocolResult<()> {
         state.previous_counter = state.sending_chain.as_ref().map(|c| c.index()).unwrap_or(0);
         state.set_remote_dh(remote_dh);
 
@@ -402,13 +454,14 @@ impl DoubleRatchetSession {
         let mut shared_secret = dh_local.diffie_hellman(&remote_dh);
         let (rk, receiving_key) = RatchetKdf::kdf_rk(&state.root_key, shared_secret.as_bytes())?;
         shared_secret.zeroize();
-        
+
         state.root_key = *rk;
         state.receiving_chain = Some(ChainKey::new(*receiving_key));
 
         let new_local = StaticSecret::random_from_rng(&mut rand_core::OsRng);
         let mut shared_secret_send = new_local.diffie_hellman(&remote_dh);
-        let (rk2, sending_key) = RatchetKdf::kdf_rk(&state.root_key, shared_secret_send.as_bytes())?;
+        let (rk2, sending_key) =
+            RatchetKdf::kdf_rk(&state.root_key, shared_secret_send.as_bytes())?;
         shared_secret_send.zeroize();
 
         state.root_key = *rk2;
@@ -437,17 +490,26 @@ impl DoubleRatchetSession {
         Ok(hex::encode(bytes))
     }
 
-    pub fn session_id(&self) -> &str { &self.session_id }
-    pub fn set_peer_id(&mut self, peer_id: String) { self.peer_id = Some(peer_id); }
-    pub fn peer_id(&self) -> Option<&str> { self.peer_id.as_deref() }
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    pub fn set_peer_id(&mut self, peer_id: String) {
+        self.peer_id = Some(peer_id);
+    }
+    pub fn peer_id(&self) -> Option<&str> {
+        self.peer_id.as_deref()
+    }
     pub fn message_stats(&self) -> (u64, u64) {
         let state = self.state.read();
         (state.messages_sent, state.messages_received)
     }
-    pub fn age(&self) -> std::time::Duration { 
+    pub fn age(&self) -> std::time::Duration {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression in ratchet session: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression in ratchet session: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
         std::time::Duration::from_secs(now.saturating_sub(self.created_at_ts))
     }
@@ -455,7 +517,9 @@ impl DoubleRatchetSession {
         self.state.read().summary()
     }
     /// Check if the session has expired
-    pub fn is_expired(&self) -> bool { self.state.read().is_expired() }
+    pub fn is_expired(&self) -> bool {
+        self.state.read().is_expired()
+    }
 
     /// Serialize the current session state to bytes.
     ///
@@ -486,14 +550,17 @@ impl DoubleRatchetSession {
     /// `None` and the encrypt path requires it to construct the
     /// header.
     pub fn deserialize_state(&self, data: &[u8]) -> ProtocolResult<()> {
-        let mut loaded: DoubleRatchetState = bincode::serde::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v)
-            .map_err(|_| ProtocolError::DeserializationError)?;
+        let mut loaded: DoubleRatchetState =
+            bincode::serde::decode_from_slice(data, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .map_err(|_| ProtocolError::DeserializationError)?;
 
         // Re-hydrate the remote public key from its serialized bytes
         // (dh_remote itself is serde-skipped). Private scalar dh_local
         // stays None — a fresh key pair is generated on the next
         // outgoing ratchet step.
-        loaded.restore_dh_keys()
+        loaded
+            .restore_dh_keys()
             .map_err(|_| ProtocolError::DeserializationError)?;
 
         {
@@ -534,7 +601,7 @@ impl DoubleRatchetSession {
         Ok(())
     }
 
-    /// Jump the sending ratchet to the reserved index 
+    /// Jump the sending ratchet to the reserved index
     pub fn jump_to_reservation(&self) -> ProtocolResult<()> {
         let mut state = self.state.write();
         if let Some(ref mut ck) = state.sending_chain {
@@ -546,7 +613,7 @@ impl DoubleRatchetSession {
         Ok(())
     }
 
-    /// Reserve nonces for future sends 
+    /// Reserve nonces for future sends
     pub fn reserve_nonces(&self, count: u64) -> ProtocolResult<()> {
         let mut state = self.state.write();
         if let Some(ref mut ck) = state.sending_chain {
@@ -566,7 +633,6 @@ impl Zeroize for DoubleRatchetSession {
         }
     }
 }
-
 
 impl Drop for DoubleRatchetSession {
     fn drop(&mut self) {}
@@ -589,7 +655,14 @@ mod tests {
         let shared_secret = [0x42u8; 32];
         let local_dh = StaticSecret::random_from_rng(&mut rand_core::OsRng);
         let remote_dh = PublicKey::from(&StaticSecret::random_from_rng(&mut rand_core::OsRng));
-        assert!(DoubleRatchetSession::from_shared_secret(&shared_secret, local_dh, remote_dh, config, HandshakeRole::Initiator).is_ok());
+        assert!(DoubleRatchetSession::from_shared_secret(
+            &shared_secret,
+            local_dh,
+            remote_dh,
+            config,
+            HandshakeRole::Initiator
+        )
+        .is_ok());
     }
 
     #[test]
@@ -601,8 +674,22 @@ mod tests {
         let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
         let pk2 = PublicKey::from(&sk2);
 
-        let s1 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk1, pk2, config.clone(), HandshakeRole::Initiator).unwrap();
-        let s2 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk2, pk1, config, HandshakeRole::Responder).unwrap();
+        let s1 = DoubleRatchetSession::from_shared_secret(
+            &shared_secret,
+            sk1,
+            pk2,
+            config.clone(),
+            HandshakeRole::Initiator,
+        )
+        .unwrap();
+        let s2 = DoubleRatchetSession::from_shared_secret(
+            &shared_secret,
+            sk2,
+            pk1,
+            config,
+            HandshakeRole::Responder,
+        )
+        .unwrap();
 
         let plaintext = b"Hello Production!";
         let ad = b"aad";
@@ -619,8 +706,22 @@ mod tests {
         let pk1 = PublicKey::from(&sk1);
         let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
         let pk2 = PublicKey::from(&sk2);
-        let s1 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk1, pk2, config.clone(), HandshakeRole::Initiator).unwrap();
-        let s2 = DoubleRatchetSession::from_shared_secret(&shared_secret, sk2, pk1, config, HandshakeRole::Responder).unwrap();
+        let s1 = DoubleRatchetSession::from_shared_secret(
+            &shared_secret,
+            sk1,
+            pk2,
+            config.clone(),
+            HandshakeRole::Initiator,
+        )
+        .unwrap();
+        let s2 = DoubleRatchetSession::from_shared_secret(
+            &shared_secret,
+            sk2,
+            pk1,
+            config,
+            HandshakeRole::Responder,
+        )
+        .unwrap();
         let ct = s1.encrypt(b"test", b"ad").unwrap();
         let _ = s2.decrypt(&ct, b"ad").unwrap();
         assert!(s2.decrypt(&ct, b"ad").is_err());
@@ -644,11 +745,21 @@ mod tests {
 
         // Establish a real session between Alice (initiator) and Bob (responder).
         let alice = DoubleRatchetSession::from_shared_secret(
-            &shared_secret, sk1.clone(), pk2, config.clone(), HandshakeRole::Initiator,
-        ).unwrap();
+            &shared_secret,
+            sk1.clone(),
+            pk2,
+            config.clone(),
+            HandshakeRole::Initiator,
+        )
+        .unwrap();
         let bob = DoubleRatchetSession::from_shared_secret(
-            &shared_secret, sk2.clone(), pk1, config.clone(), HandshakeRole::Responder,
-        ).unwrap();
+            &shared_secret,
+            sk2.clone(),
+            pk1,
+            config.clone(),
+            HandshakeRole::Responder,
+        )
+        .unwrap();
 
         // Alice sends one message; Bob decrypts.
         let ct0 = alice.encrypt(b"first message", b"ad").unwrap();

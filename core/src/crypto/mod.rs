@@ -8,27 +8,24 @@
 //! - Constant-time comparison operations
 
 pub mod encryptor;
-pub mod random;
 pub mod kdf;
+pub mod padding;
+pub mod random;
 pub mod secure_compare;
 pub mod secure_memory;
-pub mod padding;
 
 pub use encryptor::*;
-pub use random::*;
 pub use kdf::*;
+pub use padding::{pad_message, unpad_message, PaddingMode};
+pub use random::*;
 pub use secure_compare::*;
 pub use secure_memory::SecureMemory;
-pub use padding::{PaddingMode, pad_message, unpad_message};
 pub use subtle::{Choice, ConstantTimeEq};
 
 use crate::error::{ProtocolError, ProtocolResult};
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
-use chacha20poly1305::{
-    ChaCha20Poly1305, KeyInit,
-    aead::Aead,
-};
+use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
 use thiserror::Error;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Crypto Errors
 #[derive(Error, Debug, Clone)]
@@ -154,13 +151,13 @@ impl CryptoHandler {
 
         // Aggregate bad flags in constant time to avoid timing oracles
         let is_zero = key.ct_eq(&[0u8; KEY_LENGTH]);
-        
+
         let mut first_byte_all = [key[0]; KEY_LENGTH];
         let is_all_same = key.ct_eq(&first_byte_all);
         first_byte_all.zeroize();
-        
+
         let is_weak = is_zero | is_all_same;
-        
+
         let mut key_array = [0u8; KEY_LENGTH];
         key_array.copy_from_slice(key);
 
@@ -212,7 +209,7 @@ impl CryptoHandler {
         // Zeroize nonce after use
         let result = self.encrypt_with_nonce(plaintext, associated_data, &nonce);
         nonce.zeroize();
-        
+
         result
     }
 
@@ -242,11 +239,15 @@ impl CryptoHandler {
 
         // Empty plaintext is permitted (see `encrypt` doc).
 
-        let ciphertext = self.cipher
-            .encrypt(nonce.into(), chacha20poly1305::aead::Payload {
-                msg: plaintext,
-                aad: associated_data,
-            })
+        let ciphertext = self
+            .cipher
+            .encrypt(
+                nonce.into(),
+                chacha20poly1305::aead::Payload {
+                    msg: plaintext,
+                    aad: associated_data,
+                },
+            )
             .map_err(|_| CryptoError::EncryptionFailed)?;
 
         // Result: nonce || ciphertext (which includes tag)
@@ -285,10 +286,13 @@ impl CryptoHandler {
         let encrypted_data = &ciphertext[NONCE_LENGTH..];
 
         self.cipher
-            .decrypt(nonce.into(), chacha20poly1305::aead::Payload {
-                msg: encrypted_data,
-                aad: associated_data,
-            })
+            .decrypt(
+                nonce.into(),
+                chacha20poly1305::aead::Payload {
+                    msg: encrypted_data,
+                    aad: associated_data,
+                },
+            )
             .map_err(|_| CryptoError::AuthenticationFailed)
     }
 
@@ -316,10 +320,13 @@ impl CryptoHandler {
         let (nonce, encrypted_data) = ciphertext.split_at_mut(NONCE_LENGTH);
 
         self.cipher
-            .decrypt(chacha20poly1305::Nonce::from_slice(nonce), chacha20poly1305::aead::Payload {
-                msg: encrypted_data,
-                aad: associated_data,
-            })
+            .decrypt(
+                chacha20poly1305::Nonce::from_slice(nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: encrypted_data,
+                    aad: associated_data,
+                },
+            )
             .map_err(|_| {
                 // Zeroize on error to prevent information leakage
                 ciphertext.zeroize();
@@ -357,13 +364,13 @@ impl KeyGenerator {
         let mut rng = SecureRandom::new()?;
         let mut key = [0u8; KEY_LENGTH];
         rng.fill_bytes(&mut key);
-        
+
         // Verify key is not weak
         if key.iter().all(|&b| b == 0) || key.iter().all(|&b| b == key[0]) {
             // Extremely unlikely, but regenerate if it happens
             return Self::generate_key();
         }
-        
+
         Ok(Zeroizing::new(key))
     }
 
@@ -412,20 +419,48 @@ pub fn validate_key_security(key: &[u8]) -> CryptoResult<()> {
     Ok(())
 }
 
-/// Validate an X25519 public key to prevent Small Subgroup Attacks 
+/// Validate an X25519 public key to prevent Small Subgroup Attacks
 ///
 /// Rejects the 8 known low-order points for Curve25519.
 pub fn validate_public_key(pub_key: &[u8; 32]) -> CryptoResult<()> {
     // 8 Low-order points for Curve25519
     const LOW_ORDER_POINTS: [[u8; 32]; 8] = [
         [0x00; 32],
-        [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-        [0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0x01, 0xf1, 0xda, 0x56, 0x75, 0x47, 0x11, 0x85, 0x12, 0x1a, 0x9f, 0x17, 0x60, 0xe7, 0x61, 0x19, 0x90, 0x3f, 0x52, 0x49, 0x22, 0xfe, 0x80, 0x5a, 0x5f],
-        [0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0xa5, 0x99, 0x83, 0x17, 0x0c, 0x64, 0x81, 0x41, 0xb2, 0x39, 0x52, 0x80, 0x24, 0xed, 0x54, 0x8f, 0x61, 0x6c, 0x7e, 0x48, 0x8a],
-        [0xed, 0xce, 0x84, 0x43, 0xbc, 0xaf, 0x73, 0x1d, 0x0e, 0x25, 0xd4, 0x7f, 0x3d, 0x1b, 0xba, 0x8a, 0xb6, 0xb0, 0x5b, 0x69, 0x80, 0x45, 0x29, 0xed, 0x7f, 0x72, 0x1d, 0x97, 0xa3, 0x31, 0xa3, 0xec],
-        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80],
-        [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x81],
-        [0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0x01, 0xf1, 0xda, 0x56, 0x75, 0x47, 0x11, 0x85, 0x12, 0x1a, 0x9f, 0x17, 0x60, 0xe7, 0x61, 0x19, 0x90, 0x3f, 0x52, 0x49, 0x22, 0xfe, 0x80, 0x5a, 0xdf]
+        [
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
+        [
+            0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0x01, 0xf1, 0xda, 0x56, 0x75, 0x47, 0x11,
+            0x85, 0x12, 0x1a, 0x9f, 0x17, 0x60, 0xe7, 0x61, 0x19, 0x90, 0x3f, 0x52, 0x49, 0x22,
+            0xfe, 0x80, 0x5a, 0x5f,
+        ],
+        [
+            0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0xa5, 0x99, 0x83,
+            0x17, 0x0c, 0x64, 0x81, 0x41, 0xb2, 0x39, 0x52, 0x80, 0x24, 0xed, 0x54, 0x8f, 0x61,
+            0x6c, 0x7e, 0x48, 0x8a,
+        ],
+        [
+            0xed, 0xce, 0x84, 0x43, 0xbc, 0xaf, 0x73, 0x1d, 0x0e, 0x25, 0xd4, 0x7f, 0x3d, 0x1b,
+            0xba, 0x8a, 0xb6, 0xb0, 0x5b, 0x69, 0x80, 0x45, 0x29, 0xed, 0x7f, 0x72, 0x1d, 0x97,
+            0xa3, 0x31, 0xa3, 0xec,
+        ],
+        [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x80,
+        ],
+        [
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x81,
+        ],
+        [
+            0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0x01, 0xf1, 0xda, 0x56, 0x75, 0x47, 0x11,
+            0x85, 0x12, 0x1a, 0x9f, 0x17, 0x60, 0xe7, 0x61, 0x19, 0x90, 0x3f, 0x52, 0x49, 0x22,
+            0xfe, 0x80, 0x5a, 0xdf,
+        ],
     ];
 
     for point in &LOW_ORDER_POINTS {
@@ -438,7 +473,7 @@ pub fn validate_public_key(pub_key: &[u8; 32]) -> CryptoResult<()> {
 
 /// Shared Serde helpers for cryptographic types
 pub mod serde_helpers {
-    use serde::{Serializer, Deserializer, Serialize, Deserialize};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use x25519_dalek::StaticSecret;
 
     /// X25519 private scalars are ephemeral — they must not survive a save/load cycle.
@@ -458,9 +493,7 @@ pub mod serde_helpers {
             None::<[u8; 32]>.serialize(serializer)
         }
 
-        pub fn deserialize<'de, D>(
-            deserializer: D,
-        ) -> Result<Option<StaticSecret>, D::Error>
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<StaticSecret>, D::Error>
         where
             D: Deserializer<'de>,
         {
@@ -469,7 +502,7 @@ pub mod serde_helpers {
         }
     }
 
-        /// Serde helper for parking_lot::RwLock
+    /// Serde helper for parking_lot::RwLock
     pub mod rw_lock_serde {
         use super::*;
         use parking_lot::RwLock;
@@ -522,7 +555,10 @@ mod tests {
         let result = handler.decrypt(&ciphertext, b"wrong ad");
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CryptoError::AuthenticationFailed));
+        assert!(matches!(
+            result.unwrap_err(),
+            CryptoError::AuthenticationFailed
+        ));
     }
 
     #[test]
@@ -550,10 +586,10 @@ mod tests {
     fn test_key_generator() {
         let key1 = KeyGenerator::generate_key().unwrap();
         let key2 = KeyGenerator::generate_key().unwrap();
-        
+
         // Keys should be different
         assert_ne!(key1.as_ref(), key2.as_ref());
-        
+
         // Keys should be valid length
         assert_eq!(key1.len(), KEY_LENGTH);
     }
@@ -562,7 +598,7 @@ mod tests {
     fn test_nonce_generation() {
         let nonce1 = KeyGenerator::generate_nonce().unwrap();
         let nonce2 = KeyGenerator::generate_nonce().unwrap();
-        
+
         // Nonces should be different (with extremely high probability)
         assert_ne!(nonce1, nonce2);
     }
@@ -570,17 +606,17 @@ mod tests {
     #[test]
     fn test_ciphertext_tampering() {
         let key = KeyGenerator::generate_key().unwrap();
-        
+
         let handler = CryptoHandler::new(key.as_ref()).unwrap();
 
         let plaintext = b"Hello, World!";
         let ad = b"associated data";
 
         let mut ciphertext = handler.encrypt(plaintext, ad).unwrap();
-        
+
         // Tamper with ciphertext
         ciphertext[20] ^= 0xFF;
-        
+
         let result = handler.decrypt(&ciphertext, ad);
         assert!(result.is_err());
     }
@@ -594,7 +630,10 @@ mod tests {
         let handler = CryptoHandler::new(key.as_ref()).unwrap();
 
         let result = handler.encrypt(b"", b"ad");
-        assert!(result.is_ok(), "Empty plaintext should be permitted for cover traffic");
+        assert!(
+            result.is_ok(),
+            "Empty plaintext should be permitted for cover traffic"
+        );
         let ct = result.unwrap();
         let pt = handler.decrypt(&ct, b"ad").unwrap();
         assert_eq!(pt, b"");

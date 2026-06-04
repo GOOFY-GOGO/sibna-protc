@@ -1,6 +1,6 @@
 //! Constant-time comparison primitives.
 
-use subtle::{ConstantTimeEq, Choice, ConditionallySelectable};
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -73,8 +73,14 @@ pub fn constant_time_contains(slice: &[u8], target: u8) -> bool {
 
 /// Returns 0 if equal, 1 if not, -1 if lengths differ.
 pub fn constant_time_memcmp(a: &[u8], b: &[u8]) -> i32 {
-    if a.len() != b.len() { return -1; }
-    if a.ct_eq(b).into() { 0 } else { 1 }
+    if a.len() != b.len() {
+        return -1;
+    }
+    if a.ct_eq(b).into() {
+        0
+    } else {
+        1
+    }
 }
 
 pub fn secure_zero(memory: &mut [u8]) {
@@ -122,7 +128,11 @@ pub fn batch_constant_time_compare(value: &[u8], candidates: &[&[u8]]) -> Option
         match_index.conditional_assign(&(i as u32), update);
         found |= is_match;
     }
-    if found.into() { Some(match_index as usize) } else { None }
+    if found.into() {
+        Some(match_index as usize)
+    } else {
+        None
+    }
 }
 
 /// Lexicographic ordering for non-sensitive data (e.g. deterministic role assignment).

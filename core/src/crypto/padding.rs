@@ -4,11 +4,11 @@
 //! mitigating message size leakage to network observers.
 //!
 //! ## V3.1.0 Hardening
-//! In "Fortress" mode, we add a random prefix (1-8 bytes) and move the length field 
+//! In "Fortress" mode, we add a random prefix (1-8 bytes) and move the length field
 //! to the encrypted boundary to prevent range inference attacks.
 
-use crate::error::{ProtocolError, ProtocolResult};
 use crate::crypto::random::SecureRandom;
+use crate::error::{ProtocolError, ProtocolResult};
 use serde::{Deserialize, Serialize};
 
 /// Padding strategies for different privacy/performance tradeoffs.
@@ -52,7 +52,7 @@ impl PaddingMode {
 
 /// Total non-plaintext overhead bytes in the padded format (v3.1.0)
 /// [ 1-byte prefix_len | prefix_noise (1..8) | ... | 2-byte LE padding_len ]
-pub const PADDING_MIN_OVERHEAD: usize = 1 + 1 + 2; 
+pub const PADDING_MIN_OVERHEAD: usize = 1 + 1 + 2;
 
 /// Default padding block size (1024 bytes) — the most common choice for
 /// general-purpose messaging. Exposed as a top-level constant so modules
@@ -105,7 +105,7 @@ pub fn pad_message(plaintext: &[u8], mode: PaddingMode) -> ProtocolResult<Vec<u8
     }
 
     let mut rng = SecureRandom::new().map_err(|_| ProtocolError::InternalError)?;
-    
+
     // 1. Generate random prefix noise (1 to 8 bytes)
     let prefix_len = (rng.next_u32() % 8 + 1) as usize;
     let mut prefix_noise = vec![0u8; prefix_len];
@@ -162,7 +162,11 @@ pub fn pad_message(plaintext: &[u8], mode: PaddingMode) -> ProtocolResult<Vec<u8
     output.push((pad_len & 0xFF) as u8);
     output.push((pad_len >> 8) as u8);
 
-    debug_assert_eq!(output.len() % block, 0, "padded size must be multiple of block");
+    debug_assert_eq!(
+        output.len() % block,
+        0,
+        "padded size must be multiple of block"
+    );
 
     Ok(output)
 }
@@ -203,7 +207,12 @@ mod tests {
     #[test]
     fn test_pad_unpad_roundtrip() {
         let msg = b"Hello, Sibna!";
-        for mode in [PaddingMode::Small, PaddingMode::Standard, PaddingMode::Large, PaddingMode::Quantum] {
+        for mode in [
+            PaddingMode::Small,
+            PaddingMode::Standard,
+            PaddingMode::Large,
+            PaddingMode::Quantum,
+        ] {
             let padded = pad_message(msg, mode).unwrap();
             // Padded size must be exact multiple of block
             assert_eq!(padded.len() % mode.block_size(), 0, "not aligned: {mode:?}");
@@ -266,10 +275,12 @@ mod tests {
             let p = pad_message(msg, mode).unwrap();
             sizes.insert(p.len());
         }
-        assert!(sizes.len() >= 2,
+        assert!(
+            sizes.len() >= 2,
             "SIBNA-2026-018 regression: padded size for fixed plaintext is constant across \
              64 trials; only saw sizes {:?}. Expected at least 2 distinct sizes.",
-            sizes);
+            sizes
+        );
         // And every size is aligned to the block.
         for s in &sizes {
             assert_eq!(s % mode.block_size(), 0);

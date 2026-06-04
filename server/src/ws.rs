@@ -4,16 +4,16 @@
 //! envelopes between connected clients. Disconnected recipients get messages
 //! queued in redb with a 7-day TTL.
 
+use crate::{auth::validate_jwt, AppState};
+use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{State, WebSocketUpgrade, Query},
+    extract::{Query, State, WebSocketUpgrade},
     response::IntoResponse,
 };
-use axum::extract::ws::{Message, WebSocket};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use futures_util::{SinkExt, StreamExt};
 use tracing::{info, warn};
-use crate::{AppState, auth::validate_jwt};
 
 /// A sender channel for pushing messages to a connected client
 pub type ClientTx = mpsc::UnboundedSender<Vec<u8>>;
@@ -47,7 +47,7 @@ pub struct SealedEnvelope {
 pub struct WebRtcSignal {
     pub recipient_id: String,
     pub payload_hex: String, // Encrypted SDP or ICE candidate
-    pub signature_hex: String, 
+    pub signature_hex: String,
     pub timestamp: i64,
 }
 
@@ -56,12 +56,10 @@ pub struct WebRtcSignal {
 pub enum WsMessage {
     #[serde(rename = "envelope")]
     Envelope(SealedEnvelope),
-    
+
     #[serde(rename = "ack")]
-    Ack {
-        message_id: String,
-    },
-    
+    Ack { message_id: String },
+
     #[serde(rename = "webrtc")]
     WebRtc(WebRtcSignal),
 }
@@ -100,7 +98,10 @@ async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
 
     // Register this client
     state.rt.clients.insert(identity_id.clone(), tx.clone());
-    info!("Client connected: {}", identity_id.get(..16).unwrap_or(&identity_id));
+    info!(
+        "Client connected: {}",
+        identity_id.get(..16).unwrap_or(&identity_id)
+    );
 
     // Deliver any queued offline messages
     deliver_queued_messages(&state, &identity_id, &tx).await;
@@ -143,17 +144,27 @@ async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
             };
             if let Some(bytes) = raw {
                 // Backward-compatible JSON parsing: Try WsMessage format first, fallback to raw SealedEnvelope
-                let msg_parsed = serde_json::from_slice::<WsMessage>(&bytes)
-                    .or_else(|_| serde_json::from_slice::<SealedEnvelope>(&bytes).map(WsMessage::Envelope));
+                let msg_parsed = serde_json::from_slice::<WsMessage>(&bytes).or_else(|_| {
+                    serde_json::from_slice::<SealedEnvelope>(&bytes).map(WsMessage::Envelope)
+                });
 
                 if let Ok(ws_msg) = msg_parsed {
                     match ws_msg {
-                        WsMessage::Envelope(envelope) => route_message(&state_clone, &id_clone, envelope).await,
-                        WsMessage::Ack { message_id } => handle_ack(&state_clone, &id_clone, &message_id).await,
-                        WsMessage::WebRtc(signal) => route_webrtc(&state_clone, &id_clone, signal).await,
+                        WsMessage::Envelope(envelope) => {
+                            route_message(&state_clone, &id_clone, envelope).await
+                        }
+                        WsMessage::Ack { message_id } => {
+                            handle_ack(&state_clone, &id_clone, &message_id).await
+                        }
+                        WsMessage::WebRtc(signal) => {
+                            route_webrtc(&state_clone, &id_clone, signal).await
+                        }
                     }
                 } else {
-                    warn!("WS_PARSE: Received invalid message from {}", id_clone.get(..16).unwrap_or(&id_clone));
+                    warn!(
+                        "WS_PARSE: Received invalid message from {}",
+                        id_clone.get(..16).unwrap_or(&id_clone)
+                    );
                 }
             }
         }
@@ -167,20 +178,31 @@ async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
 
     // Unregister client
     state.rt.clients.remove(&identity_id);
-    info!("Client disconnected: {}", identity_id.get(..16).unwrap_or(&identity_id));
+    info!(
+        "Client disconnected: {}",
+        identity_id.get(..16).unwrap_or(&identity_id)
+    );
 }
 
 /// Route a sealed envelope to recipient or queue it
 async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEnvelope) {
     // Validate message_id length to prevent key-bloat DoS on the dedup tree.
     if envelope.message_id.is_empty() || envelope.message_id.len() > 128 {
-        warn!("Dropping message with invalid message_id from {}", sender_id.get(..16).unwrap_or(sender_id));
+        warn!(
+            "Dropping message with invalid message_id from {}",
+            sender_id.get(..16).unwrap_or(sender_id)
+        );
         return;
     }
 
     // Validate recipient_id format (must be 64 hex chars = 32-byte key)
-    if envelope.recipient_id.len() != 64 || !envelope.recipient_id.chars().all(|c| c.is_ascii_hexdigit()) {
-        warn!("Dropping message with invalid recipient_id from {}", sender_id.get(..16).unwrap_or(sender_id));
+    if envelope.recipient_id.len() != 64
+        || !envelope.recipient_id.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        warn!(
+            "Dropping message with invalid recipient_id from {}",
+            sender_id.get(..16).unwrap_or(sender_id)
+        );
         return;
     }
 
@@ -188,7 +210,11 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
     // HTTP requests only — WebSocket frames bypass it. Limit to 20 MB hex (= 10 MB payload).
     const MAX_PAYLOAD_HEX_LEN: usize = 20 * 1024 * 1024;
     if envelope.payload_hex.len() > MAX_PAYLOAD_HEX_LEN {
-        warn!("Dropping oversized payload ({} bytes hex) from {}", envelope.payload_hex.len(), sender_id.get(..16).unwrap_or(sender_id));
+        warn!(
+            "Dropping oversized payload ({} bytes hex) from {}",
+            envelope.payload_hex.len(),
+            sender_id.get(..16).unwrap_or(sender_id)
+        );
         return;
     }
 
@@ -207,7 +233,11 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
         };
 
         if !is_expired {
-            warn!("Duplicate message_id dropped from {}: {}", sender_id.get(..16).unwrap_or(sender_id), envelope.message_id);
+            warn!(
+                "Duplicate message_id dropped from {}: {}",
+                sender_id.get(..16).unwrap_or(sender_id),
+                envelope.message_id
+            );
             return;
         }
         // Expired entry — evict inline before re-inserting
@@ -215,7 +245,11 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
     }
     // Store insertion timestamp (binary i64) for future dedup checks.
     let ts_bytes = chrono::Utc::now().timestamp().to_be_bytes();
-    state.db.tree_dedup.insert(dedup_key.as_bytes(), &ts_bytes).ok();
+    state
+        .db
+        .tree_dedup
+        .insert(dedup_key.as_bytes(), &ts_bytes)
+        .ok();
 
     // CRYPTO: Verify Ed25519 signature from the sender.
     // The sender MUST sign a canonical payload that unambiguously encodes all fields.
@@ -231,11 +265,14 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
     //
     // field boundaries unambiguous and prevents any overlap attack.
     {
-        use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
         use std::io::Write;
 
         let mut canonical: Vec<u8> = Vec::with_capacity(
-            3 * 8 + envelope.recipient_id.len() + envelope.message_id.len() + envelope.payload_hex.len()
+            3 * 8
+                + envelope.recipient_id.len()
+                + envelope.message_id.len()
+                + envelope.payload_hex.len(),
         );
         let r = envelope.recipient_id.as_bytes();
         let m = envelope.message_id.as_bytes();
@@ -250,35 +287,51 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
         let key_bytes = match hex::decode(sender_id) {
             Ok(b) if b.len() == 32 => b,
             _ => {
-                warn!("WS_AUTH: invalid sender_id hex from {}", sender_id.get(..16).unwrap_or(sender_id));
+                warn!(
+                    "WS_AUTH: invalid sender_id hex from {}",
+                    sender_id.get(..16).unwrap_or(sender_id)
+                );
                 return;
             }
         };
         let key_arr: [u8; 32] = match key_bytes.try_into() {
             Ok(a) => a,
-            Err(_) => { return; }
+            Err(_) => {
+                return;
+            }
         };
         let verifying_key = match VerifyingKey::from_bytes(&key_arr) {
             Ok(k) => k,
             Err(_) => {
-                warn!("WS_AUTH: invalid Ed25519 key from {}", sender_id.get(..16).unwrap_or(sender_id));
+                warn!(
+                    "WS_AUTH: invalid Ed25519 key from {}",
+                    sender_id.get(..16).unwrap_or(sender_id)
+                );
                 return;
             }
         };
         let sig_bytes = match hex::decode(&envelope.signature_hex) {
             Ok(b) if b.len() == 64 => b,
             _ => {
-                warn!("WS_AUTH: missing or invalid signature from {}", sender_id.get(..16).unwrap_or(sender_id));
+                warn!(
+                    "WS_AUTH: missing or invalid signature from {}",
+                    sender_id.get(..16).unwrap_or(sender_id)
+                );
                 return;
             }
         };
         let sig_arr: [u8; 64] = match sig_bytes.try_into() {
             Ok(a) => a,
-            Err(_) => { return; }
+            Err(_) => {
+                return;
+            }
         };
         let signature = Signature::from_bytes(&sig_arr);
         if verifying_key.verify(&canonical, &signature).is_err() {
-            warn!("WS_AUTH: signature verification failed from {}", sender_id.get(..16).unwrap_or(sender_id));
+            warn!(
+                "WS_AUTH: signature verification failed from {}",
+                sender_id.get(..16).unwrap_or(sender_id)
+            );
             return;
         }
     }
@@ -297,7 +350,14 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
                 recipient_tx.send(data).ok();
             }
             Err(e) => {
-                warn!("WS_ROUTE: failed to serialize envelope for {}: {}", envelope.recipient_id.get(..16).unwrap_or(&envelope.recipient_id), e);
+                warn!(
+                    "WS_ROUTE: failed to serialize envelope for {}: {}",
+                    envelope
+                        .recipient_id
+                        .get(..16)
+                        .unwrap_or(&envelope.recipient_id),
+                    e
+                );
             }
         }
     }
@@ -314,12 +374,17 @@ async fn queue_message(state: &AppState, envelope: &SealedEnvelope) {
     if let Ok(bytes) = serde_json::to_vec(&value) {
         state.db.tree_queue.insert(db_key.as_bytes(), bytes).ok();
     }
-    info!("Queued message for offline recipient: {}", envelope.recipient_id.get(..16).unwrap_or(&envelope.recipient_id));
+    info!(
+        "Queued message for offline recipient: {}",
+        envelope
+            .recipient_id
+            .get(..16)
+            .unwrap_or(&envelope.recipient_id)
+    );
 }
 
 /// Deliver all queued messages to a newly connected client
 async fn deliver_queued_messages(state: &AppState, identity_id: &str, tx: &ClientTx) {
-
     let prefix = format!("queue:{}:", identity_id);
     let now = chrono::Utc::now().timestamp();
     let mut to_delete = Vec::new();
@@ -335,16 +400,24 @@ async fn deliver_queued_messages(state: &AppState, identity_id: &str, tx: &Clien
             if let Some(env_val) = json.get("envelope") {
                 if let Ok(envelope) = serde_json::from_value::<SealedEnvelope>(env_val.clone()) {
                     match serde_json::to_vec(&WsMessage::Envelope(envelope)) {
-                        Ok(data) => { tx.send(data).ok(); }
-                        Err(e) => { warn!("WS_DELIVER: failed to serialise queued envelope: {}", e); }
+                        Ok(data) => {
+                            tx.send(data).ok();
+                        }
+                        Err(e) => {
+                            warn!("WS_DELIVER: failed to serialise queued envelope: {}", e);
+                        }
                     }
                     // PILLAR 1: DO NOT mark for deletion! Waiting for explicit client ACK.
                 }
             } else if let Some(sig_val) = json.get("signal") {
                 if let Ok(signal) = serde_json::from_value::<WebRtcSignal>(sig_val.clone()) {
                     match serde_json::to_vec(&WsMessage::WebRtc(signal)) {
-                        Ok(data) => { tx.send(data).ok(); }
-                        Err(e) => { warn!("WS_DELIVER: failed to serialise queued signal: {}", e); }
+                        Ok(data) => {
+                            tx.send(data).ok();
+                        }
+                        Err(e) => {
+                            warn!("WS_DELIVER: failed to serialise queued signal: {}", e);
+                        }
                     }
                     // WebRTC signals are ephemeral — safe to delete upon delivery attempt to prevent ghost ringing.
                     to_delete.push(key);
@@ -362,22 +435,32 @@ async fn deliver_queued_messages(state: &AppState, identity_id: &str, tx: &Clien
 /// Handle a client ACK for a message — permanently removes it from the queue
 async fn handle_ack(state: &AppState, identity_id: &str, message_id: &str) {
     let db_key = format!("queue:{}:{}", identity_id, message_id);
-    if state.db.tree_queue.remove(db_key.as_bytes()).unwrap_or_default().is_some() {
-        info!("ACK received from {}. Message permanently removed from queue.", identity_id.get(..16).unwrap_or(identity_id));
+    if state
+        .db
+        .tree_queue
+        .remove(db_key.as_bytes())
+        .unwrap_or_default()
+        .is_some()
+    {
+        info!(
+            "ACK received from {}. Message permanently removed from queue.",
+            identity_id.get(..16).unwrap_or(identity_id)
+        );
     }
 }
 
 /// Route an ephemeral WebRTC Signal (Offer/Answer/ICE)
 async fn route_webrtc(state: &AppState, sender_id: &str, mut signal: WebRtcSignal) {
-    if signal.recipient_id.len() != 64 { return; }
+    if signal.recipient_id.len() != 64 {
+        return;
+    }
 
     {
-        use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
         use std::io::Write;
         // Same canonical length-prefixed format as route_message.
-        let mut canonical: Vec<u8> = Vec::with_capacity(
-            2 * 8 + signal.recipient_id.len() + signal.payload_hex.len()
-        );
+        let mut canonical: Vec<u8> =
+            Vec::with_capacity(2 * 8 + signal.recipient_id.len() + signal.payload_hex.len());
         let r = signal.recipient_id.as_bytes();
         let p = signal.payload_hex.as_bytes();
         canonical.write_all(&(r.len() as u64).to_be_bytes()).ok();
@@ -407,7 +490,10 @@ async fn route_webrtc(state: &AppState, sender_id: &str, mut signal: WebRtcSigna
         };
         let signature = Signature::from_bytes(&sig_arr);
         if verifying_key.verify(&canonical, &signature).is_err() {
-            warn!("WS_WEBRTC: signature verification failed from {}", sender_id.get(..16).unwrap_or(sender_id));
+            warn!(
+                "WS_WEBRTC: signature verification failed from {}",
+                sender_id.get(..16).unwrap_or(sender_id)
+            );
             return;
         }
     }
@@ -423,7 +509,11 @@ async fn route_webrtc(state: &AppState, sender_id: &str, mut signal: WebRtcSigna
     }
 
     // Queue signal with a very short TTL (60 seconds) because WebRTC session states fast-expire
-    let db_key = format!("queue:{}:webrtc_{}", signal.recipient_id, uuid::Uuid::new_v4());
+    let db_key = format!(
+        "queue:{}:webrtc_{}",
+        signal.recipient_id,
+        uuid::Uuid::new_v4()
+    );
     let ttl_cutoff = chrono::Utc::now().timestamp() + 60;
     let value = serde_json::json!({
         "signal": signal,

@@ -4,8 +4,8 @@
 //! Comprehensive input validation for all external-facing APIs.
 //! Prevents injection attacks, buffer overflows, and malformed data.
 
-use crate::error::ProtocolError;
 use crate::crypto::{constant_time_eq, constant_time_is_zero};
+use crate::error::ProtocolError;
 
 /// Maximum sizes for various inputs
 pub mod limits {
@@ -96,13 +96,25 @@ impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TooShort { min, actual } => {
-                write!(f, "Input too short: expected at least {} bytes, got {}", min, actual)
+                write!(
+                    f,
+                    "Input too short: expected at least {} bytes, got {}",
+                    min, actual
+                )
             }
             Self::TooLong { max, actual } => {
-                write!(f, "Input too long: expected at most {} bytes, got {}", max, actual)
+                write!(
+                    f,
+                    "Input too long: expected at most {} bytes, got {}",
+                    max, actual
+                )
             }
             Self::InvalidLength { expected, actual } => {
-                write!(f, "Invalid length: expected {} bytes, got {}", expected, actual)
+                write!(
+                    f,
+                    "Invalid length: expected {} bytes, got {}",
+                    expected, actual
+                )
             }
             Self::InvalidBytes { reason } => {
                 write!(f, "Invalid bytes: {}", reason)
@@ -132,7 +144,7 @@ pub fn validate_message(data: &[u8]) -> ValidationResult<()> {
     if data.is_empty() {
         return Err(ValidationError::Empty);
     }
-    
+
     if data.len() > limits::MAX_MESSAGE_SIZE {
         return Err(ValidationError::TooLong {
             max: limits::MAX_MESSAGE_SIZE,
@@ -146,7 +158,7 @@ pub fn validate_message(data: &[u8]) -> ValidationResult<()> {
             actual: data.len(),
         });
     }
-    
+
     Ok(())
 }
 
@@ -162,7 +174,7 @@ pub fn validate_ciphertext(data: &[u8]) -> ValidationResult<()> {
             actual: data.len(),
         });
     }
-    
+
     if data.len() > limits::MAX_CIPHERTEXT_SIZE {
         return Err(ValidationError::TooLong {
             max: limits::MAX_CIPHERTEXT_SIZE,
@@ -178,7 +190,7 @@ pub fn validate_session_id(id: &[u8]) -> ValidationResult<()> {
     if id.is_empty() {
         return Err(ValidationError::Empty);
     }
-    
+
     if id.len() > limits::MAX_SESSION_ID_LEN {
         return Err(ValidationError::TooLong {
             max: limits::MAX_SESSION_ID_LEN,
@@ -192,7 +204,7 @@ pub fn validate_session_id(id: &[u8]) -> ValidationResult<()> {
             actual: id.len(),
         });
     }
-    
+
     // Check for null bytes
     if id.contains(&0) {
         return Err(ValidationError::NullByte);
@@ -202,7 +214,7 @@ pub fn validate_session_id(id: &[u8]) -> ValidationResult<()> {
     if id.iter().any(|&b| b < 32) {
         return Err(ValidationError::InvalidCharacters);
     }
-    
+
     Ok(())
 }
 
@@ -214,7 +226,7 @@ pub fn validate_key(key: &[u8]) -> ValidationResult<()> {
             actual: key.len(),
         });
     }
-    
+
     // Check that key is not all zeros (weak key)
     if constant_time_is_zero(key) {
         return Err(ValidationError::InvalidBytes {
@@ -229,7 +241,7 @@ pub fn validate_key(key: &[u8]) -> ValidationResult<()> {
             reason: "Key has repeating pattern (weak key)".to_string(),
         });
     }
-    
+
     Ok(())
 }
 
@@ -248,7 +260,7 @@ pub fn validate_signature(sig: &[u8]) -> ValidationResult<()> {
             reason: "Signature is all zeros".to_string(),
         });
     }
-    
+
     Ok(())
 }
 
@@ -260,7 +272,7 @@ pub fn validate_associated_data(ad: &[u8]) -> ValidationResult<()> {
             actual: ad.len(),
         });
     }
-    
+
     Ok(())
 }
 
@@ -269,21 +281,21 @@ pub fn validate_password(password: &[u8]) -> ValidationResult<()> {
     if password.is_empty() {
         return Err(ValidationError::Empty);
     }
-    
+
     if password.len() < limits::MIN_PASSWORD_LEN {
         return Err(ValidationError::TooShort {
             min: limits::MIN_PASSWORD_LEN,
             actual: password.len(),
         });
     }
-    
+
     if password.len() > limits::MAX_PASSWORD_LEN {
         return Err(ValidationError::TooLong {
             max: limits::MAX_PASSWORD_LEN,
             actual: password.len(),
         });
     }
-    
+
     // Check for null bytes
     if password.contains(&0) {
         return Err(ValidationError::NullByte);
@@ -299,7 +311,7 @@ pub fn validate_password(password: &[u8]) -> ValidationResult<()> {
             reason: "Password must contain uppercase, lowercase, and digit".to_string(),
         });
     }
-    
+
     Ok(())
 }
 
@@ -308,7 +320,7 @@ pub fn validate_group_id(id: &[u8]) -> ValidationResult<()> {
     if id.is_empty() {
         return Err(ValidationError::Empty);
     }
-    
+
     if id.len() > limits::MAX_GROUP_ID_LEN {
         return Err(ValidationError::TooLong {
             max: limits::MAX_GROUP_ID_LEN,
@@ -322,7 +334,7 @@ pub fn validate_group_id(id: &[u8]) -> ValidationResult<()> {
             actual: id.len(),
         });
     }
-    
+
     Ok(())
 }
 
@@ -331,7 +343,7 @@ pub fn validate_message_number(n: u64) -> ValidationResult<()> {
     if n > limits::MAX_MESSAGE_NUMBER {
         return Err(ValidationError::OutOfRange);
     }
-    
+
     Ok(())
 }
 
@@ -343,7 +355,7 @@ pub fn validate_metadata(metadata: &[u8]) -> ValidationResult<()> {
             actual: metadata.len(),
         });
     }
-    
+
     Ok(())
 }
 
@@ -362,7 +374,7 @@ pub fn validate_prekey_bundle(
 
     // Validate signature
     validate_signature(signature)?;
-    
+
     // Validate onetime prekey if present
     if let Some(opk) = onetime_prekey {
         validate_key(opk)?;
@@ -374,7 +386,7 @@ pub fn validate_prekey_bundle(
             reason: "Identity key and signed prekey must be different".to_string(),
         });
     }
-    
+
     Ok(())
 }
 
@@ -390,7 +402,7 @@ pub fn validate_handshake_output(
             actual: shared_secret.len(),
         });
     }
-    
+
     // Ephemeral key should be 32 bytes
     if ephemeral_key.len() != limits::MAX_KEY_SIZE {
         return Err(ValidationError::InvalidLength {
@@ -398,7 +410,7 @@ pub fn validate_handshake_output(
             actual: ephemeral_key.len(),
         });
     }
-    
+
     // Check shared secret is not all zeros (possible DH failure)
     if constant_time_is_zero(shared_secret) {
         return Err(ValidationError::CryptoValidation {
@@ -412,7 +424,7 @@ pub fn validate_handshake_output(
             reason: "Ephemeral key is all zeros".to_string(),
         });
     }
-    
+
     Ok(())
 }
 
@@ -450,12 +462,19 @@ pub fn validate_username(username: &str) -> ValidationResult<()> {
     }
 
     // Check for valid characters (alphanumeric, underscore, hyphen)
-    if !username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(ValidationError::InvalidCharacters);
     }
 
     // Must start with letter
-    if !username.chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+    if !username
+        .chars()
+        .next()
+        .map_or(false, |c| c.is_ascii_alphabetic())
+    {
         return Err(ValidationError::InvalidFormat);
     }
 
@@ -493,10 +512,7 @@ pub fn sanitize_string(s: &str) -> String {
 /// binary payloads and must never substitute proper length-validation.
 /// For binary data, use `contains_null_byte` to detect and reject, not strip.
 pub fn sanitize_bytes(data: &[u8]) -> Vec<u8> {
-    data.iter()
-        .filter(|&&b| b != 0)
-        .copied()
-        .collect()
+    data.iter().filter(|&&b| b != 0).copied().collect()
 }
 
 /// Returns `true` if `data` contains any null (0x00) byte.
@@ -541,16 +557,15 @@ mod tests {
     fn test_validate_key() {
         // Valid key (non-repeating)
         let key = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
         ];
         assert!(validate_key(&key).is_ok());
-        
+
         // Wrong length
         assert!(validate_key(&[1u8; 16]).is_err());
-        
+
         // All zeros (weak)
         assert!(validate_key(&[0u8; 32]).is_err());
 
@@ -565,10 +580,10 @@ mod tests {
     fn test_validate_message() {
         // Valid message
         assert!(validate_message(b"hello").is_ok());
-        
+
         // Empty
         assert!(validate_message(b"").is_err());
-        
+
         // Too large
         let large = vec![0u8; limits::MAX_MESSAGE_SIZE + 1];
         assert!(validate_message(&large).is_err());
@@ -578,10 +593,10 @@ mod tests {
     fn test_validate_password() {
         // Valid password
         assert!(validate_password(b"Password123").is_ok());
-        
+
         // Too short
         assert!(validate_password(b"short").is_err());
-        
+
         // Contains null
         assert!(validate_password(b"pass\x00word").is_err());
 
@@ -596,7 +611,7 @@ mod tests {
     fn test_validate_ciphertext() {
         // Too short
         assert!(validate_ciphertext(&[0u8; 20]).is_err());
-        
+
         // Valid (minimum)
         assert!(validate_ciphertext(&[0u8; 29]).is_ok());
     }
@@ -647,16 +662,14 @@ mod tests {
     #[test]
     fn test_validate_prekey_bundle() {
         let ik = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
         ];
         let spk = [
-            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
-            0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
-            0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
-            0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
+            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e,
+            0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c,
+            0x3d, 0x3e, 0x3f, 0x40,
         ];
         let sig = [0x55u8; 64];
 
@@ -673,10 +686,12 @@ mod tests {
     fn test_max_ad_len_matches_crypto_layer() {
         use crate::crypto::MAX_INFO_LENGTH;
         assert_eq!(
-            limits::MAX_AD_LEN, MAX_INFO_LENGTH,
+            limits::MAX_AD_LEN,
+            MAX_INFO_LENGTH,
             "MAX_AD_LEN ({}) must equal crypto::MAX_INFO_LENGTH ({}) — \
              mismatches cause silent AD rejection at the cipher layer",
-            limits::MAX_AD_LEN, MAX_INFO_LENGTH
+            limits::MAX_AD_LEN,
+            MAX_INFO_LENGTH
         );
     }
 

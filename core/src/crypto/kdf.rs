@@ -65,11 +65,7 @@ impl HkdfKdf {
     /// * `ikm` - Input keying material
     /// * `salt` - Salt
     /// * `infos` - Multiple info strings
-    pub fn derive_multiple(
-        ikm: &[u8],
-        salt: &[u8],
-        infos: &[&[u8]],
-    ) -> CryptoResult<Vec<Vec<u8>>> {
+    pub fn derive_multiple(ikm: &[u8], salt: &[u8], infos: &[&[u8]]) -> CryptoResult<Vec<Vec<u8>>> {
         infos
             .iter()
             .map(|info| Self::derive(ikm, Some(salt), info, KEY_LENGTH))
@@ -162,8 +158,8 @@ impl RatchetKdf {
     fn hmac_sha256(key: &[u8], data: &[u8]) -> CryptoResult<Zeroizing<[u8; KEY_LENGTH]>> {
         use hmac::{Hmac, Mac};
 
-        let mut mac = Hmac::<Sha256>::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?;
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength)?;
         mac.update(data);
         let result = mac.finalize();
         let bytes = result.into_bytes();
@@ -269,7 +265,8 @@ impl Argon2Kdf {
         let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
         let mut output = [0u8; KEY_LENGTH];
-        argon2.hash_password_into(password, salt, &mut output)
+        argon2
+            .hash_password_into(password, salt, &mut output)
             .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
         Ok(Zeroizing::new(output))

@@ -169,7 +169,9 @@ pub unsafe extern "C" fn sibna_context_create(
     match crate::SecureContext::new(config, password_slice) {
         Ok(ctx) => {
             let ctx_ptr = Box::into_raw(Box::new(ctx));
-            unsafe { *context = ctx_ptr as *mut _; }
+            unsafe {
+                *context = ctx_ptr as *mut _;
+            }
             SibnaResult::Ok
         }
         Err(e) => {
@@ -496,11 +498,7 @@ pub extern "C" fn sibna_last_error(buffer: *mut c_char, buffer_len: usize) -> Si
     }
 
     unsafe {
-        ptr::copy_nonoverlapping(
-            error_msg.as_ptr() as *const c_char,
-            buffer,
-            error_msg.len(),
-        );
+        ptr::copy_nonoverlapping(error_msg.as_ptr() as *const c_char, buffer, error_msg.len());
     }
 
     SibnaResult::Ok
@@ -534,7 +532,9 @@ pub extern "C" fn sibna_session_create(
     match ctx.create_session(peer_id_slice) {
         Ok(handle) => {
             let session_ptr = Box::into_raw(Box::new(handle));
-            unsafe { *session = session_ptr as *mut _; }
+            unsafe {
+                *session = session_ptr as *mut _;
+            }
             SibnaResult::Ok
         }
         Err(e) => map_error(e),
@@ -735,10 +735,7 @@ pub extern "C" fn sibna_session_encrypt(
     ad_len: usize,
     ciphertext_out: *mut ByteBuffer,
 ) -> SibnaResult {
-    if context.is_null()
-        || session_id.is_null()
-        || plaintext.is_null()
-        || ciphertext_out.is_null()
+    if context.is_null() || session_id.is_null() || plaintext.is_null() || ciphertext_out.is_null()
     {
         set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
@@ -788,10 +785,7 @@ pub extern "C" fn sibna_session_decrypt(
     ad_len: usize,
     plaintext_out: *mut ByteBuffer,
 ) -> SibnaResult {
-    if context.is_null()
-        || session_id.is_null()
-        || ciphertext.is_null()
-        || plaintext_out.is_null()
+    if context.is_null() || session_id.is_null() || ciphertext.is_null() || plaintext_out.is_null()
     {
         set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
@@ -854,7 +848,9 @@ pub extern "C" fn sibna_identity_sign(
 
     match keypair.sign(data_slice) {
         Ok(sig) => {
-            unsafe { ptr::copy_nonoverlapping(sig.as_ptr(), signature_out, 64); }
+            unsafe {
+                ptr::copy_nonoverlapping(sig.as_ptr(), signature_out, 64);
+            }
             SibnaResult::Ok
         }
         Err(e) => map_error(e),
@@ -883,20 +879,29 @@ pub extern "C" fn sibna_identity_verify(
     let data_slice = unsafe { slice::from_raw_parts(data, data_len) };
     let sig_bytes = unsafe { slice::from_raw_parts(signature, 64) };
 
-    use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     let key_arr: [u8; 32] = match pub_bytes.try_into() {
         Ok(a) => a,
-        Err(_) => { set_last_error("Invalid public key length"); return SibnaResult::InvalidArgument; }
+        Err(_) => {
+            set_last_error("Invalid public key length");
+            return SibnaResult::InvalidArgument;
+        }
     };
     let sig_arr: [u8; 64] = match sig_bytes.try_into() {
         Ok(a) => a,
-        Err(_) => { set_last_error("Invalid signature length"); return SibnaResult::InvalidArgument; }
+        Err(_) => {
+            set_last_error("Invalid signature length");
+            return SibnaResult::InvalidArgument;
+        }
     };
 
     let vk = match VerifyingKey::from_bytes(&key_arr) {
         Ok(k) => k,
-        Err(_) => { set_last_error("Invalid Ed25519 public key"); return SibnaResult::InvalidArgument; }
+        Err(_) => {
+            set_last_error("Invalid Ed25519 public key");
+            return SibnaResult::InvalidArgument;
+        }
     };
 
     match vk.verify(data_slice, &Signature::from_bytes(&sig_arr)) {

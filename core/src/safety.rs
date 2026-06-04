@@ -4,10 +4,10 @@
 //! Safety numbers allow users to verify each other's identity keys
 //! through an out-of-band channel (QR code, voice, etc.).
 
-use sha2::{Sha256, Sha512, Digest};
-use std::fmt;
 use crate::crypto::constant_time_eq;
 use crate::error::{ProtocolError, ProtocolResult};
+use sha2::{Digest, Sha256, Sha512};
+use std::fmt;
 
 /// Safety Number - A human-readable fingerprint for identity verification
 ///
@@ -110,24 +110,24 @@ impl SafetyNumber {
     fn bytes_to_digits(bytes: &[u8; 32]) -> String {
         // Use a base-10 encoding for better readability
         // We'll use 5 digits per 2 bytes (16 bits -> 5 decimal digits)
-        
+
         let mut digits = String::with_capacity(95); // 80 digits + 15 spaces
-        
+
         for (i, chunk) in bytes.chunks(2).enumerate() {
             if i > 0 && i % 3 == 0 {
                 digits.push(' ');
             }
-            
+
             let value = if chunk.len() == 2 {
                 ((chunk[0] as u32) << 8) | (chunk[1] as u32)
             } else {
                 (chunk[0] as u32) << 8
             };
-            
+
             // Format as 5 digits with leading zeros
             digits.push_str(&format!("{:05}", value % 100000));
         }
-        
+
         digits
     }
 
@@ -153,22 +153,22 @@ impl SafetyNumber {
     /// Parse safety number from string
     pub fn parse(s: &str) -> Option<Self> {
         let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-        
+
         if digits.len() != 80 {
             return None;
         }
 
         // Reverse the digit-to-bytes conversion
         let mut fingerprint = [0u8; 32];
-        
+
         for (i, chunk) in digits.as_bytes().chunks(5).enumerate() {
             if i >= 16 {
                 break;
             }
-            
+
             let chunk_str = std::str::from_utf8(chunk).ok()?;
             let value: u32 = chunk_str.parse().ok()?;
-            
+
             fingerprint[i * 2] = ((value >> 8) & 0xFF) as u8;
             fingerprint[i * 2 + 1] = (value & 0xFF) as u8;
         }
@@ -199,8 +199,12 @@ impl SafetyNumber {
     /// (for detecting typos during manual verification)
     pub fn similarity(&self, other: &SafetyNumber) -> f64 {
         let mut matches = 0;
-        for (a, b) in self.digits.chars().filter(|c| c.is_ascii_digit())
-            .zip(other.digits.chars().filter(|c| c.is_ascii_digit())) {
+        for (a, b) in self
+            .digits
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .zip(other.digits.chars().filter(|c| c.is_ascii_digit()))
+        {
             if a == b {
                 matches += 1;
             }
@@ -335,7 +339,7 @@ impl VerificationQrCode {
     /// Calculate MAC for integrity
     fn calculate_mac(data: &[u8], key: &[u8; 32]) -> [u8; 32] {
         use hmac::{Hmac, Mac};
-        
+
         let mut mac = Hmac::<Sha256>::new_from_slice(key)
             // HMAC accepts any key size; [u8;32] is always valid
             .unwrap_or_else(|_| unreachable!("HMAC accepts any key size"));
@@ -403,10 +407,7 @@ pub fn safety_number_from_bundles(
     our_bundle: &crate::handshake::PreKeyBundle,
     their_bundle: &crate::handshake::PreKeyBundle,
 ) -> SafetyNumber {
-    SafetyNumber::calculate(
-        &our_bundle.identity_key,
-        &their_bundle.identity_key,
-    )
+    SafetyNumber::calculate(&our_bundle.identity_key, &their_bundle.identity_key)
 }
 
 #[cfg(test)]
@@ -435,7 +436,7 @@ mod tests {
 
         // Should have spaces
         assert!(display.contains(' '));
-        
+
         // Should only contain digits and spaces
         for c in display.chars() {
             assert!(c.is_ascii_digit() || c == ' ');
@@ -466,9 +467,9 @@ mod tests {
         let mac_key = [0x99u8; 32];
         let qr = VerificationQrCode::new(identity_key, device_id, fingerprint, mac_key);
         let bytes = qr.to_bytes();
-        
+
         let parsed = VerificationQrCode::from_bytes(&bytes, &mac_key).unwrap();
-        
+
         assert_eq!(qr.identity_key, parsed.identity_key);
         assert_eq!(qr.device_id, parsed.device_id);
     }
@@ -482,10 +483,10 @@ mod tests {
         let mac_key = [0x99u8; 32];
         let qr = VerificationQrCode::new(identity_key, device_id, fingerprint, mac_key);
         let mut bytes = qr.to_bytes();
-        
+
         // Tamper with the data
         bytes[10] ^= 0xFF;
-        
+
         assert!(VerificationQrCode::from_bytes(&bytes, &mac_key).is_err());
     }
 

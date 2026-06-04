@@ -3,12 +3,12 @@
 //! Provides secure storage and management of cryptographic keys.
 //! All keys are encrypted at rest and zeroized when dropped.
 
-use crate::error::{ProtocolError, ProtocolResult};
-use crate::crypto::{CryptoHandler, constant_time_eq, constant_time_is_zero};
-use zeroize::{Zeroize, ZeroizeOnDrop};
-use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
 use crate::crypto::serde_helpers::dh_local_serde;
+use crate::crypto::{constant_time_eq, constant_time_is_zero, CryptoHandler};
+use crate::error::{ProtocolError, ProtocolResult};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Identity key pair (Ed25519 for signing, X25519 for DH)
 #[derive(Clone, Serialize, Deserialize)]
@@ -70,11 +70,11 @@ impl IdentityKeyPair {
     /// were derived directly from the same seed bytes — a cryptographic domain
     /// separation failure that has been corrected here.
     pub fn from_bytes(ed_pub: &[u8], x_pub: &[u8], seed: &[u8]) -> ProtocolResult<Self> {
+        use crate::error::ProtocolError;
         use ed25519_dalek::SigningKey;
         use hkdf::Hkdf;
         use sha2::Sha256;
         use zeroize::Zeroize;
-        use crate::error::ProtocolError;
 
         let ed25519_public: [u8; 32] = ed_pub
             .try_into()
@@ -135,8 +135,7 @@ impl IdentityKeyPair {
     pub fn sign(&self, data: &[u8]) -> ProtocolResult<[u8; 64]> {
         use ed25519_dalek::{Signer, SigningKey};
 
-        let secret = self.ed25519_secret
-            .ok_or(ProtocolError::InvalidState)?;
+        let secret = self.ed25519_secret.ok_or(ProtocolError::InvalidState)?;
 
         let signing_key = SigningKey::from_bytes(&secret);
         let signature = signing_key.sign(data);
@@ -146,7 +145,7 @@ impl IdentityKeyPair {
 
     /// Verify signature with Ed25519
     pub fn verify(&self, data: &[u8], signature: &[u8; 64]) -> ProtocolResult<bool> {
-        use ed25519_dalek::{Verifier, VerifyingKey, Signature};
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
         let verifying_key = VerifyingKey::from_bytes(&self.ed25519_public)
             .map_err(|_| ProtocolError::InvalidKey)?;
@@ -157,14 +156,15 @@ impl IdentityKeyPair {
         // Ok(false) is a "soft" failure that callers can silently ignore (missing
         // match arm, ? operator skipping, etc.). Err forces explicit handling.
         // Callers: use `keypair.verify(...)?` — the error propagates on failure.
-        verifying_key.verify(data, &sig)
+        verifying_key
+            .verify(data, &sig)
             .map(|_| true)
             .map_err(|_| ProtocolError::InvalidSignature)
     }
 
     /// Get key fingerprint
     pub fn fingerprint(&self) -> [u8; 32] {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(&self.ed25519_public);
@@ -279,9 +279,14 @@ impl SignedPreKey {
         let (pq_public, pq_secret) = {
             use fips203::ml_kem_768;
             use fips203::traits::{KeyGen, SerDes};
-            let (pk, sk): (ml_kem_768::EncapsKey, ml_kem_768::DecapsKey) = ml_kem_768::KG::try_keygen()
-                .map_err(|_| ProtocolError::InternalErrorDetailed { details: "PQC Keygen failed".to_string() })?;
-            (Some(SerDes::into_bytes(pk).to_vec()), Some(SerDes::into_bytes(sk).to_vec()))
+            let (pk, sk): (ml_kem_768::EncapsKey, ml_kem_768::DecapsKey) =
+                ml_kem_768::KG::try_keygen().map_err(|_| ProtocolError::InternalErrorDetailed {
+                    details: "PQC Keygen failed".to_string(),
+                })?;
+            (
+                Some(SerDes::into_bytes(pk).to_vec()),
+                Some(SerDes::into_bytes(sk).to_vec()),
+            )
         };
 
         let created_at = std::time::SystemTime::now()
@@ -311,7 +316,10 @@ impl SignedPreKey {
 
     /// Verify the signature
     pub fn verify(&self, identity: &IdentityKeyPair) -> ProtocolResult<bool> {
-        let signature: [u8; 64] = self.signature.as_slice().try_into()
+        let signature: [u8; 64] = self
+            .signature
+            .as_slice()
+            .try_into()
             .map_err(|_| ProtocolError::InvalidSignature)?;
         identity.verify(&self.public, &signature)
     }
@@ -445,7 +453,7 @@ pub struct PinnedKey {
 
 impl PinnedKey {
     fn new(identity_key: [u8; 32], our_identity: &[u8; 32]) -> Self {
-        use sha2::{Sha512, Digest};
+        use sha2::{Digest, Sha512};
         // Sort keys for consistent Safety Number regardless of who calls it
         let (first, second) = if our_identity < &identity_key {
             (our_identity, &identity_key)
@@ -468,7 +476,12 @@ impl PinnedKey {
             })
             .as_secs();
 
-        Self { identity_key, pinned_at, verified: false, safety_number }
+        Self {
+            identity_key,
+            pinned_at,
+            verified: false,
+            safety_number,
+        }
     }
 }
 
@@ -553,8 +566,7 @@ impl KeyStore {
 
     /// Get identity key pair
     pub fn get_identity_keypair(&self) -> ProtocolResult<IdentityKeyPair> {
-        self.identity.clone()
-            .ok_or(ProtocolError::KeyNotFound)
+        self.identity.clone().ok_or(ProtocolError::KeyNotFound)
     }
 
     /// Generate and set signed prekey
@@ -575,7 +587,11 @@ impl KeyStore {
 
     /// Replenish one-time prekeys if they fall below the specified threshold.
     /// Returns the number of new keys generated.
-    pub fn replenish_onetime_prekeys(&mut self, threshold: usize, target: usize) -> ProtocolResult<usize> {
+    pub fn replenish_onetime_prekeys(
+        &mut self,
+        threshold: usize,
+        target: usize,
+    ) -> ProtocolResult<usize> {
         let current_count = self.onetime_prekey_count();
         if current_count >= threshold {
             return Ok(0);
@@ -618,8 +634,13 @@ impl KeyStore {
 
     /// Get the Ed25519 signature covering the signed prekey public key
     pub fn get_signed_prekey_signature(&self) -> ProtocolResult<[u8; 64]> {
-        let spk = self.signed_prekey.as_ref().ok_or(ProtocolError::KeyNotFound)?;
-        let sig: [u8; 64] = spk.signature.as_slice()
+        let spk = self
+            .signed_prekey
+            .as_ref()
+            .ok_or(ProtocolError::KeyNotFound)?;
+        let sig: [u8; 64] = spk
+            .signature
+            .as_slice()
             .try_into()
             .map_err(|_| ProtocolError::InvalidSignature)?;
         Ok(sig)
@@ -628,11 +649,16 @@ impl KeyStore {
     /// Get the combined data required to build a PreKey bundle.
     ///
     /// Returns (identity_public, signed_prekey_public, signed_prekey_signature, onetime_prekey_public).
-    pub fn get_prekey_bundle_data(&self) -> ProtocolResult<([u8; 32], [u8; 32], [u8; 64], Option<[u8; 32]>)> {
+    pub fn get_prekey_bundle_data(
+        &self,
+    ) -> ProtocolResult<([u8; 32], [u8; 32], [u8; 64], Option<[u8; 32]>)> {
         let identity = self.get_identity_keypair()?;
         let spk_pub = self.get_signed_prekey_public()?;
         let sig = self.get_signed_prekey_signature()?;
-        let opk = self.get_onetime_prekey_public().ok().map(|(_, pub_key)| pub_key);
+        let opk = self
+            .get_onetime_prekey_public()
+            .ok()
+            .map(|(_, pub_key)| pub_key);
         Ok((identity.ed25519_public, spk_pub, sig, opk))
     }
 
@@ -645,15 +671,20 @@ impl KeyStore {
         let identity = self.get_identity_keypair()?;
         let spk_pub = self.get_signed_prekey_public()?;
         let sig = self.get_signed_prekey_signature()?;
-        let opk = self.get_onetime_prekey_public().ok().map(|(_, pub_key)| pub_key);
+        let opk = self
+            .get_onetime_prekey_public()
+            .ok()
+            .map(|(_, pub_key)| pub_key);
 
         let root_key = self.root_identity_key.unwrap_or(identity.ed25519_public);
         let dev_sig = match &self.device_signature {
             Some(s) => {
                 let mut arr = [0u8; 64];
-                if s.len() == 64 { arr.copy_from_slice(s); }
+                if s.len() == 64 {
+                    arr.copy_from_slice(s);
+                }
                 arr
-            },
+            }
             None => {
                 // If we are the master device (id=0), we sign our own device linking certificate
                 let mut dev_payload = Vec::with_capacity(36);
@@ -707,8 +738,7 @@ impl KeyStore {
         // Find unused, non-expired key
         for (_, prekey) in &self.onetime_prekeys {
             if !prekey.used && !prekey.is_expired() {
-                return prekey.secret.clone()
-                    .ok_or(ProtocolError::KeyNotFound);
+                return prekey.secret.clone().ok_or(ProtocolError::KeyNotFound);
             }
         }
         Err(ProtocolError::KeyNotFound)
@@ -716,7 +746,8 @@ impl KeyStore {
 
     /// Get specific one-time prekey by ID
     pub fn get_onetime_prekey_by_id(&self, id: u32) -> ProtocolResult<x25519_dalek::StaticSecret> {
-        self.onetime_prekeys.get(&id)
+        self.onetime_prekeys
+            .get(&id)
             .and_then(|k| k.secret.clone())
             .ok_or(ProtocolError::KeyNotFound)
     }
@@ -748,9 +779,15 @@ impl KeyStore {
 
     /// Prune expired and used keys
     pub fn prune_keys(&mut self) {
-        self.onetime_prekeys.retain(|_, k| !k.used && !k.is_expired());
+        self.onetime_prekeys
+            .retain(|_, k| !k.used && !k.is_expired());
 
-        if self.signed_prekey.as_ref().map(|k| k.is_expired()).unwrap_or(false) {
+        if self
+            .signed_prekey
+            .as_ref()
+            .map(|k| k.is_expired())
+            .unwrap_or(false)
+        {
             self.signed_prekey = None;
         }
     }
@@ -790,7 +827,8 @@ impl KeyStore {
         // Encrypt with ChaCha20-Poly1305
         let handler = CryptoHandler::new(encryption_key.as_ref())
             .map_err(|_| ProtocolError::InternalError)?;
-        handler.encrypt(&plaintext, b"SibnaKeyStore_v3")
+        handler
+            .encrypt(&plaintext, b"SibnaKeyStore_v3")
             .map_err(|_| ProtocolError::StorageError)
     }
 
@@ -802,11 +840,14 @@ impl KeyStore {
 
         let handler = CryptoHandler::new(encryption_key.as_ref())
             .map_err(|_| ProtocolError::InternalError)?;
-        let plaintext = handler.decrypt(data, b"SibnaKeyStore_v3")
+        let plaintext = handler
+            .decrypt(data, b"SibnaKeyStore_v3")
             .map_err(|_| ProtocolError::StorageError)?;
 
-        let mut store: KeyStore = bincode::serde::decode_from_slice(&plaintext, bincode::config::legacy()).map(|(v,_)|v)
-            .map_err(|_| ProtocolError::DeserializationError)?;
+        let mut store: KeyStore =
+            bincode::serde::decode_from_slice(&plaintext, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .map_err(|_| ProtocolError::DeserializationError)?;
 
         // Restore transient (non-serialized) private key fields from their serialized bytes
         // IdentityKeyPair: ed25519_secret and x25519_secret are #[serde(skip)],
@@ -828,7 +869,11 @@ impl KeyStore {
     ///
     /// # Feature
     /// Available without any feature flags — uses only `std::fs`.
-    pub fn save_to_disk(&self, path: &std::path::Path, encryption_key: &[u8; 32]) -> ProtocolResult<()> {
+    pub fn save_to_disk(
+        &self,
+        path: &std::path::Path,
+        encryption_key: &[u8; 32],
+    ) -> ProtocolResult<()> {
         use std::io::Write;
 
         let encrypted = self.to_encrypted_bytes(encryption_key)?;
@@ -836,16 +881,13 @@ impl KeyStore {
         // Atomic write: write to temp path, then rename
         let tmp_path = path.with_extension("tmp");
 
-        let mut file = std::fs::File::create(&tmp_path)
-            .map_err(|_| ProtocolError::StorageError)?;
+        let mut file = std::fs::File::create(&tmp_path).map_err(|_| ProtocolError::StorageError)?;
         file.write_all(&encrypted)
             .map_err(|_| ProtocolError::StorageError)?;
-        file.flush()
-            .map_err(|_| ProtocolError::StorageError)?;
+        file.flush().map_err(|_| ProtocolError::StorageError)?;
         drop(file);
 
-        std::fs::rename(&tmp_path, path)
-            .map_err(|_| ProtocolError::StorageError)?;
+        std::fs::rename(&tmp_path, path).map_err(|_| ProtocolError::StorageError)?;
 
         Ok(())
     }
@@ -853,11 +895,13 @@ impl KeyStore {
     /// Load a keystore from disk, decrypting with `encryption_key`.
     ///
     /// Returns `ProtocolError::StorageError` if the file does not exist or is corrupt.
-    pub fn load_from_disk(path: &std::path::Path, encryption_key: &[u8; 32]) -> ProtocolResult<Self> {
+    pub fn load_from_disk(
+        path: &std::path::Path,
+        encryption_key: &[u8; 32],
+    ) -> ProtocolResult<Self> {
         use std::io::Read;
 
-        let mut file = std::fs::File::open(path)
-            .map_err(|_| ProtocolError::StorageError)?;
+        let mut file = std::fs::File::open(path).map_err(|_| ProtocolError::StorageError)?;
         let mut data = Vec::new();
         file.read_to_end(&mut data)
             .map_err(|_| ProtocolError::StorageError)?;
@@ -900,14 +944,15 @@ impl KeyStore {
         signed_challenge: &[u8; 64],
         device_ed25519_pub: &[u8; 32],
     ) -> ProtocolResult<bool> {
-        use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-        let verifying_key = VerifyingKey::from_bytes(device_ed25519_pub)
-            .map_err(|_| ProtocolError::InvalidKey)?;
+        let verifying_key =
+            VerifyingKey::from_bytes(device_ed25519_pub).map_err(|_| ProtocolError::InvalidKey)?;
 
         let signature = Signature::from_bytes(signed_challenge);
 
-        verifying_key.verify(challenge, &signature)
+        verifying_key
+            .verify(challenge, &signature)
             .map(|_| true)
             .map_err(|_| ProtocolError::InvalidSignature)
     }
@@ -1032,7 +1077,7 @@ mod tests {
     #[test]
     fn test_identity_keypair_generation() {
         let keypair = IdentityKeyPair::generate();
-        
+
         assert!(!constant_time_is_zero(&keypair.ed25519_public));
         assert!(!constant_time_is_zero(&keypair.x25519_public));
         assert!(keypair.is_valid());
@@ -1041,10 +1086,10 @@ mod tests {
     #[test]
     fn test_identity_keypair_sign_verify() {
         let keypair = IdentityKeyPair::generate();
-        
+
         let data = b"test data";
         let signature = keypair.sign(data).unwrap();
-        
+
         assert!(keypair.verify(data, &signature).unwrap());
         // : verify() now returns Err on bad signature, not Ok(false)
         assert!(keypair.verify(b"wrong data", &signature).is_err());
@@ -1054,7 +1099,7 @@ mod tests {
     fn test_signed_prekey() {
         let identity = IdentityKeyPair::generate();
         let prekey = SignedPreKey::generate(1, &identity).unwrap();
-        
+
         assert_eq!(prekey.key_id, 1);
         assert!(prekey.verify(&identity).unwrap());
     }
@@ -1062,10 +1107,10 @@ mod tests {
     #[test]
     fn test_onetime_prekey() {
         let mut prekey = OneTimePreKey::generate(1);
-        
+
         assert_eq!(prekey.key_id, 1);
         assert!(!prekey.used);
-        
+
         prekey.mark_used();
         assert!(prekey.used);
         assert!(prekey.secret.is_none());
@@ -1074,20 +1119,20 @@ mod tests {
     #[test]
     fn test_keystore() {
         let mut keystore = KeyStore::new().unwrap();
-        
+
         // Set identity
         let identity = IdentityKeyPair::generate();
         keystore.set_identity(identity).unwrap();
-        
+
         // Generate signed prekey
         keystore.generate_signed_prekey().unwrap();
         assert!(keystore.get_signed_prekey().is_ok());
-        
+
         // Generate one-time prekeys
         let ids = keystore.generate_onetime_prekeys(5).unwrap();
         assert_eq!(ids.len(), 5);
         assert_eq!(keystore.onetime_prekey_count(), 5);
-        
+
         // Use a one-time prekey
         let (id, _) = keystore.get_onetime_prekey_public().unwrap();
         keystore.mark_onetime_used(id);
@@ -1097,13 +1142,13 @@ mod tests {
     #[test]
     fn test_keystore_stats() {
         let mut keystore = KeyStore::new().unwrap();
-        
+
         let stats = keystore.stats();
         assert!(!stats.has_identity);
-        
+
         let identity = IdentityKeyPair::generate();
         keystore.set_identity(identity).unwrap();
-        
+
         let stats = keystore.stats();
         assert!(stats.has_identity);
     }
@@ -1120,7 +1165,7 @@ mod tests {
 
     #[test]
     fn test_verify_signed_challenge_valid() {
-        use ed25519_dalek::{SigningKey, Signer};
+        use ed25519_dalek::{Signer, SigningKey};
         use rand_core::OsRng;
 
         let signing_key = SigningKey::generate(&mut OsRng);
@@ -1129,13 +1174,14 @@ mod tests {
         let challenge = KeyStore::generate_challenge().unwrap();
         let signature = signing_key.sign(&challenge).to_bytes();
 
-        let result = KeyStore::verify_signed_challenge(&challenge, &signature, &ed25519_pub).unwrap();
+        let result =
+            KeyStore::verify_signed_challenge(&challenge, &signature, &ed25519_pub).unwrap();
         assert!(result, "Valid challenge-response must pass verification");
     }
 
     #[test]
     fn test_verify_signed_challenge_invalid() {
-        use ed25519_dalek::{SigningKey, Signer};
+        use ed25519_dalek::{Signer, SigningKey};
         use rand_core::OsRng;
 
         let signing_key = SigningKey::generate(&mut OsRng);
@@ -1150,8 +1196,14 @@ mod tests {
         // This forces callers to handle the failure explicitly (avoids "soft" Ok(false)
         // bugs that get ignored by unwrap_or or pattern-match fallthroughs).
         let result = KeyStore::verify_signed_challenge(&challenge, &signature, &ed25519_pub);
-        assert!(result.is_err(), "Signature over wrong challenge must return Err");
-        assert!(matches!(result.unwrap_err(), ProtocolError::InvalidSignature));
+        assert!(
+            result.is_err(),
+            "Signature over wrong challenge must return Err"
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            ProtocolError::InvalidSignature
+        ));
     }
 
     #[test]
@@ -1178,7 +1230,10 @@ mod tests {
         let orig_spk = keystore.get_signed_prekey_public().unwrap();
         let loaded_spk = loaded.get_signed_prekey_public().unwrap();
         assert_eq!(orig_spk, loaded_spk);
-        assert_eq!(keystore.onetime_prekey_count(), loaded.onetime_prekey_count());
+        assert_eq!(
+            keystore.onetime_prekey_count(),
+            loaded.onetime_prekey_count()
+        );
     }
 
     #[test]
@@ -1190,7 +1245,9 @@ mod tests {
 
         let encryption_key: [u8; 32] = {
             let mut k = [0u8; 32];
-            for (i, b) in k.iter_mut().enumerate() { *b = (i + 1) as u8; }
+            for (i, b) in k.iter_mut().enumerate() {
+                *b = (i + 1) as u8;
+            }
             k
         };
 
@@ -1202,7 +1259,10 @@ mod tests {
 
         let orig_spk = keystore.get_signed_prekey_public().unwrap();
         let loaded_spk = loaded.get_signed_prekey_public().unwrap();
-        assert_eq!(orig_spk, loaded_spk, "Signed prekey public must survive disk round-trip");
+        assert_eq!(
+            orig_spk, loaded_spk,
+            "Signed prekey public must survive disk round-trip"
+        );
 
         // Clean up
         let _ = std::fs::remove_file(&path);

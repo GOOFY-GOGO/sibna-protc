@@ -4,14 +4,14 @@
 //! Implements the Sender Keys protocol for efficient group encryption.
 //! Based on Signal's group messaging design with security enhancements.
 
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
-use zeroize::{Zeroize, ZeroizeOnDrop};
 use hkdf::Hkdf;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::collections::HashMap;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::crypto::{constant_time_eq, CryptoHandler, SecureRandom};
 use crate::error::{ProtocolError, ProtocolResult};
-use crate::crypto::{CryptoHandler, SecureRandom, constant_time_eq};
 
 /// Group ID type
 pub type GroupId = [u8; 32];
@@ -86,33 +86,34 @@ impl SenderKey {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| ProtocolError::InternalError)?
                 .as_secs();
-            
+
             if now > expiration {
                 return Err(ProtocolError::Expired);
             }
         }
 
         let hkdf = Hkdf::<Sha256>::new(None, &self.chain_key);
-        
+
         // Derive message key
         let mut message_key = [0u8; 32];
         hkdf.expand(b"SibnaGroupMessageKey_v3", &mut message_key)
             .map_err(|_| ProtocolError::KeyDerivationFailed)?;
-        
+
         // Advance chain key
         let mut next_chain = [0u8; 32];
         hkdf.expand(b"SibnaGroupChainKey_v3", &mut next_chain)
             .map_err(|_| ProtocolError::KeyDerivationFailed)?;
-        
+
         // Securely update chain key
         self.chain_key.zeroize();
         self.chain_key = next_chain.to_vec();
         // : u32 overflows after ~4 billion messages, causing key reuse.
         // Use checked_add and return an error rather than wrapping silently.
-        self.message_number = self.message_number
+        self.message_number = self
+            .message_number
             .checked_add(1)
             .ok_or(ProtocolError::MessageNumberOverflow)?;
-        
+
         Ok(message_key)
     }
 
@@ -121,9 +122,12 @@ impl SenderKey {
         if let Some(expiration) = self.expiration {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+                .unwrap_or_else(|e| {
+                    tracing::error!("clock regression: {:?}", e);
+                    std::time::Duration::from_secs(u64::MAX / 2)
+                })
                 .as_secs();
-            
+
             return now > expiration;
         }
         false
@@ -133,9 +137,12 @@ impl SenderKey {
     pub fn age_secs(&self) -> u64 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
-        
+
         now.saturating_sub(self.created_at)
     }
 
@@ -146,7 +153,6 @@ impl SenderKey {
         Ok(())
     }
 }
-
 
 /// Sender Key Distribution Message
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -178,7 +184,10 @@ impl SenderKeyMessage {
     ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         Self {
@@ -199,11 +208,13 @@ impl SenderKeyMessage {
             .map_err(|_| ProtocolError::InternalError)?
             .as_secs();
 
-        if self.timestamp > now + 300 { // 5 minutes in future
+        if self.timestamp > now + 300 {
+            // 5 minutes in future
             return Err(ProtocolError::InvalidMessage);
         }
 
-        if now > self.timestamp + 3600 { // 1 hour old
+        if now > self.timestamp + 3600 {
+            // 1 hour old
             return Err(ProtocolError::Expired);
         }
 
@@ -242,7 +253,10 @@ impl GroupSession {
     pub fn new(group_id: GroupId, max_size: usize) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         Self {
@@ -295,14 +309,14 @@ impl GroupSession {
         self.members.retain(|k| !constant_time_eq(k, public_key));
         self.sender_keys.remove(public_key);
         self.epoch += 1;
-        
+
         // Immediate key rotation on member removal.
         // This is critical for "Future Secrecy" within the group context.
         // A removed member must NOT be able to decrypt future messages.
         if let Some(ref mut sk) = self.our_sender_key {
             sk.rotate()?;
         }
-        
+
         self.touch();
         Ok(())
     }
@@ -314,22 +328,27 @@ impl GroupSession {
             return Err(ProtocolError::InvalidArgument);
         }
 
-        let sender_key = self.our_sender_key.as_mut()
+        let sender_key = self
+            .our_sender_key
+            .as_mut()
             .ok_or_else(|| ProtocolError::InvalidState)?;
-        
+
         // Check if key needs rotation
         if sender_key.message_number > 1000 || sender_key.is_expired() {
             sender_key.rotate()?;
         }
-        
+
         let message_key = sender_key.next_message_key()?;
-        
+
         let crypto = CryptoHandler::new(&message_key)?;
         let ciphertext = crypto.encrypt(plaintext, &self.group_id)?;
-        
+
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         let mut message = GroupMessage {
@@ -343,7 +362,7 @@ impl GroupSession {
         };
         // Sign the message if a signing key is available
         if let Some(ref sk_bytes) = self.our_signing_key {
-            use ed25519_dalek::{SigningKey, Signer};
+            use ed25519_dalek::{Signer, SigningKey};
             let sk = SigningKey::from_bytes(sk_bytes);
             let payload = message.signable_bytes();
             let sig = sk.sign(&payload);
@@ -351,12 +370,16 @@ impl GroupSession {
         }
 
         self.touch();
-        
+
         Ok(message)
     }
 
     /// Decrypt a group message
-    pub fn decrypt(&mut self, message: &GroupMessage, sender_public_key: &[u8; 32]) -> ProtocolResult<Vec<u8>> {
+    pub fn decrypt(
+        &mut self,
+        message: &GroupMessage,
+        sender_public_key: &[u8; 32],
+    ) -> ProtocolResult<Vec<u8>> {
         // Validate message
         message.validate()?;
 
@@ -373,10 +396,12 @@ impl GroupSession {
         // Verify sender's Ed25519 signature before deriving any keys.
         // any peer with a valid sender_key_id can forge messages.
         if !message.sender_signature.is_empty() {
-            use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+            use ed25519_dalek::{Signature, Verifier, VerifyingKey};
             let vk = VerifyingKey::from_bytes(sender_public_key)
                 .map_err(|_| ProtocolError::InvalidKey)?;
-            let sig_bytes: [u8; 64] = message.sender_signature.as_slice()
+            let sig_bytes: [u8; 64] = message
+                .sender_signature
+                .as_slice()
                 .try_into()
                 .map_err(|_| ProtocolError::InvalidMessage)?;
             let sig = Signature::from_bytes(&sig_bytes);
@@ -388,7 +413,9 @@ impl GroupSession {
             return Err(ProtocolError::AuthenticationFailed);
         }
 
-        let sender_key = self.sender_keys.get_mut(sender_public_key)
+        let sender_key = self
+            .sender_keys
+            .get_mut(sender_public_key)
             .ok_or_else(|| ProtocolError::KeyNotFound)?;
 
         // Check if key ID matches
@@ -406,20 +433,25 @@ impl GroupSession {
         while sender_key.message_number < message.message_number {
             sender_key.next_message_key()?;
         }
-        
+
         let message_key = sender_key.next_message_key()?;
         let crypto = CryptoHandler::new(&message_key)?;
-        
-        let plaintext = crypto.decrypt(&message.ciphertext, &self.group_id)
+
+        let plaintext = crypto
+            .decrypt(&message.ciphertext, &self.group_id)
             .map_err(ProtocolError::from)?;
-        
+
         self.touch();
-        
+
         Ok(plaintext)
     }
 
     /// Import a sender key from another member
-    pub fn import_sender_key(&mut self, public_key: [u8; 32], key: SenderKey) -> ProtocolResult<()> {
+    pub fn import_sender_key(
+        &mut self,
+        public_key: [u8; 32],
+        key: SenderKey,
+    ) -> ProtocolResult<()> {
         // Validate key
         if key.is_expired() {
             return Err(ProtocolError::Expired);
@@ -451,7 +483,10 @@ impl GroupSession {
     fn touch(&mut self) {
         self.last_activity = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
     }
 
@@ -469,9 +504,12 @@ impl GroupSession {
     pub fn age_secs(&self) -> u64 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
-        
+
         now.saturating_sub(self.created_at)
     }
 }
@@ -516,7 +554,7 @@ impl GroupMessage {
     /// Covers: group_id || sender_key_id || message_number || epoch ||
     ///         timestamp || first 32 bytes of ciphertext hash.
     pub fn signable_bytes(&self) -> Vec<u8> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(&self.ciphertext);
         let ct_hash: [u8; 32] = hasher.finalize().into();
@@ -544,11 +582,13 @@ impl GroupMessage {
             .map_err(|_| ProtocolError::InternalError)?
             .as_secs();
 
-        if self.timestamp > now + 300 { // 5 minutes in future
+        if self.timestamp > now + 300 {
+            // 5 minutes in future
             return Err(ProtocolError::InvalidMessage);
         }
 
-        if now > self.timestamp + 86400 { // 1 day old
+        if now > self.timestamp + 86400 {
+            // 1 day old
             return Err(ProtocolError::Expired);
         }
 
@@ -568,7 +608,8 @@ impl GroupMessage {
 
     /// Deserialize from bytes
     pub fn from_bytes(data: &[u8]) -> ProtocolResult<Self> {
-        bincode::serde::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v)
+        bincode::serde::decode_from_slice(data, bincode::config::legacy())
+            .map(|(v, _)| v)
             .map_err(|_| ProtocolError::DeserializationError)
     }
 }
@@ -604,9 +645,11 @@ impl GroupManager {
 
         let mut session = GroupSession::new(group_id, MAX_GROUP_SIZE);
         session.initialize_sender_key()?;
-        
+
         self.groups.insert(group_id, session);
-        self.groups.get_mut(&group_id).ok_or(crate::error::ProtocolError::InternalError)
+        self.groups
+            .get_mut(&group_id)
+            .ok_or(crate::error::ProtocolError::InternalError)
     }
 
     /// Get a group session
@@ -638,12 +681,14 @@ impl GroupManager {
     pub fn prune_inactive(&mut self, max_age_secs: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
-        self.groups.retain(|_, g| {
-            now - g.last_activity < max_age_secs
-        });
+        self.groups
+            .retain(|_, g| now - g.last_activity < max_age_secs);
     }
 }
 
@@ -667,7 +712,7 @@ impl Drop for GroupManager {
 
 /// Custom serialization for bytes
 mod serde_bytes {
-    use serde::{Serializer, Deserializer};
+    use serde::{Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -698,10 +743,10 @@ mod tests {
     #[test]
     fn test_sender_key_derivation() {
         let mut key = SenderKey::new(1).unwrap();
-        
+
         let mk1 = key.next_message_key().unwrap();
         let mk2 = key.next_message_key().unwrap();
-        
+
         assert_ne!(mk1, mk2);
         assert_eq!(key.message_number, 2);
     }
@@ -709,13 +754,13 @@ mod tests {
     #[test]
     fn test_sender_key_expiration() {
         let mut key = SenderKey::with_expiration(1, 1).unwrap(); // 1 second expiration
-        
+
         // Should work initially
         assert!(key.next_message_key().is_ok());
-        
+
         // Wait for expiration
         std::thread::sleep(std::time::Duration::from_secs(2));
-        
+
         // Should fail after expiration
         assert!(key.is_expired());
         assert!(key.next_message_key().is_err());
@@ -725,7 +770,7 @@ mod tests {
     fn test_group_session_creation() {
         let group_id = [0u8; 32];
         let mut session = GroupSession::new(group_id, 100);
-        
+
         assert!(session.initialize_sender_key().is_ok());
         assert!(session.our_sender_key.is_some());
     }
@@ -735,10 +780,10 @@ mod tests {
         let group_id = [0x42u8; 32];
         let mut session = GroupSession::new(group_id, 100);
         session.initialize_sender_key().unwrap();
-        
+
         let plaintext = b"Hello Group!";
         let message = session.encrypt(plaintext);
-        
+
         assert!(message.is_ok());
     }
 
@@ -746,14 +791,14 @@ mod tests {
     fn test_group_member_management() {
         let group_id = [0u8; 32];
         let mut session = GroupSession::new(group_id, 100);
-        
+
         let member1 = [1u8; 32];
         let member2 = [2u8; 32];
-        
+
         assert!(session.add_member(member1).is_ok());
         assert!(session.add_member(member2).is_ok());
         assert_eq!(session.member_count(), 2);
-        
+
         assert!(session.remove_member(&member1).is_ok());
         assert_eq!(session.member_count(), 1);
     }
@@ -762,7 +807,7 @@ mod tests {
     fn test_group_size_limit() {
         let group_id = [0u8; 32];
         let mut session = GroupSession::new(group_id, 2);
-        
+
         assert!(session.add_member([1u8; 32]).is_ok());
         assert!(session.add_member([2u8; 32]).is_ok());
         assert!(session.add_member([3u8; 32]).is_err()); // Should fail
@@ -772,11 +817,11 @@ mod tests {
     fn test_group_manager() {
         let master_key = [0x42u8; 32];
         let mut manager = GroupManager::new(&master_key).unwrap();
-        
+
         let group_id = [0u8; 32];
         assert!(manager.create_group(group_id).is_ok());
         assert_eq!(manager.group_count(), 1);
-        
+
         let group = manager.get_group(&group_id);
         assert!(group.is_some());
     }
@@ -796,10 +841,10 @@ mod tests {
                 .as_secs(),
             sender_signature: vec![],
         };
-        
+
         let bytes = message.to_bytes().unwrap();
         let parsed = GroupMessage::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(message.ciphertext, parsed.ciphertext);
         assert_eq!(message.sender_key_id, parsed.sender_key_id);
     }

@@ -4,10 +4,10 @@
 //! They are separate from unit tests to avoid coupling implementation details.
 
 #![allow(warnings)]
-use sibna_core::*;
 use sibna_core::crypto::{CryptoHandler, KeyGenerator};
 use sibna_core::ratchet::DoubleRatchetSession;
-use x25519_dalek::{StaticSecret, PublicKey};
+use sibna_core::*;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 // ─────────────────────────────────────────────────────────────
 // Context & identity
@@ -17,7 +17,11 @@ use x25519_dalek::{StaticSecret, PublicKey};
 fn test_context_creation_with_password() {
     let config = Config::default();
     let result = SecureContext::new(config, Some(b"SecurePass1"));
-    assert!(result.is_ok(), "Context creation failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Context creation failed: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -71,21 +75,31 @@ fn test_double_ratchet_basic_encrypt_decrypt() {
 
     let sk_alice = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let pk_alice = PublicKey::from(&sk_alice);
-    let sk_bob   = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let pk_bob   = PublicKey::from(&sk_bob);
+    let sk_bob = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let pk_bob = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
-    ).unwrap();
+        &shared_secret,
+        sk_alice,
+        pk_bob,
+        config.clone(),
+        HandshakeRole::Initiator,
+    )
+    .unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
-    ).unwrap();
+        &shared_secret,
+        sk_bob,
+        pk_alice,
+        config,
+        HandshakeRole::Responder,
+    )
+    .unwrap();
 
     let plaintext = b"Hello Bob, this is Alice.";
     let ad = b"session-aad";
 
     let ciphertext = alice.encrypt(plaintext, ad).unwrap();
-    let decrypted  = bob.decrypt(&ciphertext, ad).unwrap();
+    let decrypted = bob.decrypt(&ciphertext, ad).unwrap();
 
     assert_eq!(plaintext.to_vec(), decrypted);
 }
@@ -97,15 +111,25 @@ fn test_double_ratchet_multiple_messages() {
 
     let sk_alice = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let pk_alice = PublicKey::from(&sk_alice);
-    let sk_bob   = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let pk_bob   = PublicKey::from(&sk_bob);
+    let sk_bob = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let pk_bob = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
-    ).unwrap();
+        &shared_secret,
+        sk_alice,
+        pk_bob,
+        config.clone(),
+        HandshakeRole::Initiator,
+    )
+    .unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
-    ).unwrap();
+        &shared_secret,
+        sk_bob,
+        pk_alice,
+        config,
+        HandshakeRole::Responder,
+    )
+    .unwrap();
 
     for i in 0..50u32 {
         let msg = format!("message number {}", i);
@@ -122,15 +146,25 @@ fn test_double_ratchet_replay_rejected() {
 
     let sk_alice = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let pk_alice = PublicKey::from(&sk_alice);
-    let sk_bob   = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let pk_bob   = PublicKey::from(&sk_bob);
+    let sk_bob = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let pk_bob = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
-    ).unwrap();
+        &shared_secret,
+        sk_alice,
+        pk_bob,
+        config.clone(),
+        HandshakeRole::Initiator,
+    )
+    .unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
-    ).unwrap();
+        &shared_secret,
+        sk_bob,
+        pk_alice,
+        config,
+        HandshakeRole::Responder,
+    )
+    .unwrap();
 
     let ct = alice.encrypt(b"test replay", b"aad").unwrap();
     let _ = bob.decrypt(&ct, b"aad").unwrap();
@@ -147,15 +181,25 @@ fn test_double_ratchet_wrong_ad_rejected() {
 
     let sk_alice = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let pk_alice = PublicKey::from(&sk_alice);
-    let sk_bob   = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let pk_bob   = PublicKey::from(&sk_bob);
+    let sk_bob = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let pk_bob = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
-    ).unwrap();
+        &shared_secret,
+        sk_alice,
+        pk_bob,
+        config.clone(),
+        HandshakeRole::Initiator,
+    )
+    .unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
-    ).unwrap();
+        &shared_secret,
+        sk_bob,
+        pk_alice,
+        config,
+        HandshakeRole::Responder,
+    )
+    .unwrap();
 
     let ct = alice.encrypt(b"secret", b"correct-aad").unwrap();
     let result = bob.decrypt(&ct, b"wrong-aad");
@@ -169,15 +213,25 @@ fn test_double_ratchet_tampered_ciphertext_rejected() {
 
     let sk_alice = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let pk_alice = PublicKey::from(&sk_alice);
-    let sk_bob   = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let pk_bob   = PublicKey::from(&sk_bob);
+    let sk_bob = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let pk_bob = PublicKey::from(&sk_bob);
 
     let alice = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_alice, pk_bob, config.clone(), HandshakeRole::Initiator
-    ).unwrap();
+        &shared_secret,
+        sk_alice,
+        pk_bob,
+        config.clone(),
+        HandshakeRole::Initiator,
+    )
+    .unwrap();
     let bob = DoubleRatchetSession::from_shared_secret(
-        &shared_secret, sk_bob, pk_alice, config, HandshakeRole::Responder
-    ).unwrap();
+        &shared_secret,
+        sk_bob,
+        pk_alice,
+        config,
+        HandshakeRole::Responder,
+    )
+    .unwrap();
 
     let mut ct = alice.encrypt(b"tamper me", b"aad").unwrap();
     // Flip a byte in the ciphertext body (after header)
@@ -242,54 +296,75 @@ fn test_weak_key_rejected() {
 
 #[test]
 fn test_x3dh_shared_secrets_match() {
-    use sibna_core::handshake::x3dh::{x3dh_initiator_v3, x3dh_responder_v3, verify_shared_secret};
+    use sibna_core::handshake::x3dh::{verify_shared_secret, x3dh_initiator_v3, x3dh_responder_v3};
 
-    let alice_identity  = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let alice_identity = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let alice_ephemeral = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let alice_eph_pub   = PublicKey::from(&alice_ephemeral);
-    let alice_id_pub    = PublicKey::from(&alice_identity);
+    let alice_eph_pub = PublicKey::from(&alice_ephemeral);
+    let alice_id_pub = PublicKey::from(&alice_identity);
 
-    let bob_identity   = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let bob_id_pub     = PublicKey::from(&bob_identity);
-    let bob_spk        = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let bob_spk_pub    = PublicKey::from(&bob_spk);
-    let bob_opk        = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let bob_opk_pub    = PublicKey::from(&bob_opk);
+    let bob_identity = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let bob_id_pub = PublicKey::from(&bob_identity);
+    let bob_spk = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let bob_spk_pub = PublicKey::from(&bob_spk);
+    let bob_opk = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let bob_opk_pub = PublicKey::from(&bob_opk);
 
     let result_alice = x3dh_initiator_v3(
-        &alice_identity, &alice_ephemeral,
-        &bob_id_pub, &bob_spk_pub, Some(&bob_opk_pub),
+        &alice_identity,
+        &alice_ephemeral,
+        &bob_id_pub,
+        &bob_spk_pub,
+        Some(&bob_opk_pub),
         None,
-        &[0u8; 16], &[0u8; 16], &[0u8; 32]
-    ).unwrap();
+        &[0u8; 16],
+        &[0u8; 16],
+        &[0u8; 32],
+    )
+    .unwrap();
 
     let result_bob = x3dh_responder_v3(
-        &bob_identity, &bob_spk, Some(&bob_opk),
-        &alice_id_pub, &alice_eph_pub,
-        None, None,
-        &[0u8; 16], &[0u8; 16], &[0u8; 32]
-    ).unwrap();
+        &bob_identity,
+        &bob_spk,
+        Some(&bob_opk),
+        &alice_id_pub,
+        &alice_eph_pub,
+        None,
+        None,
+        &[0u8; 16],
+        &[0u8; 16],
+        &[0u8; 32],
+    )
+    .unwrap();
 
-    assert!(verify_shared_secret(&result_alice, &result_bob),
-        "X3DH: shared secrets must match between initiator and responder");
+    assert!(
+        verify_shared_secret(&result_alice, &result_bob),
+        "X3DH: shared secrets must match between initiator and responder"
+    );
 }
 
 #[test]
 fn test_x3dh_without_onetime_prekey() {
-    use sibna_core::handshake::x3dh::{x3dh_initiator_v3, x3dh_responder_v3, verify_shared_secret};
+    use sibna_core::handshake::x3dh::{verify_shared_secret, x3dh_initiator_v3, x3dh_responder_v3};
 
-    let a_id  = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let a_id = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let a_eph = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-    let a_id_pub  = PublicKey::from(&a_id);
+    let a_id_pub = PublicKey::from(&a_id);
     let a_eph_pub = PublicKey::from(&a_eph);
 
-    let b_id  = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+    let b_id = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let b_id_pub = PublicKey::from(&b_id);
     let b_spk = StaticSecret::random_from_rng(&mut rand_core::OsRng);
     let b_spk_pub = PublicKey::from(&b_spk);
 
-    let ra = x3dh_initiator_v3(&a_id, &a_eph, &b_id_pub, &b_spk_pub, None, None, &[0u8; 16], &[0u8; 16], &[0u8; 32]).unwrap();
-    let rb = x3dh_responder_v3(&b_id, &b_spk, None, &a_id_pub, &a_eph_pub, None, None, &[0u8; 16], &[0u8; 16], &[0u8; 32]).unwrap();
+    let ra = x3dh_initiator_v3(
+        &a_id, &a_eph, &b_id_pub, &b_spk_pub, None, None, &[0u8; 16], &[0u8; 16], &[0u8; 32],
+    )
+    .unwrap();
+    let rb = x3dh_responder_v3(
+        &b_id, &b_spk, None, &a_id_pub, &a_eph_pub, None, None, &[0u8; 16], &[0u8; 16], &[0u8; 32],
+    )
+    .unwrap();
 
     assert!(verify_shared_secret(&ra, &rb));
 }
@@ -316,7 +391,10 @@ fn test_safety_number_different_keys() {
     let k3 = [0x33u8; 32];
     let sn1 = SafetyNumber::calculate(&k1, &k2);
     let sn2 = SafetyNumber::calculate(&k1, &k3);
-    assert!(!sn1.verify(&sn2), "Different keys must produce different safety numbers");
+    assert!(
+        !sn1.verify(&sn2),
+        "Different keys must produce different safety numbers"
+    );
 }
 
 #[test]
@@ -327,7 +405,11 @@ fn test_safety_number_format() {
     let sn = SafetyNumber::calculate(&k1, &k2);
     let s = sn.as_string();
     let digits_only: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-    assert_eq!(digits_only.len(), 80, "Safety number must have 80 decimal digits");
+    assert_eq!(
+        digits_only.len(),
+        80,
+        "Safety number must have 80 decimal digits"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -351,8 +433,10 @@ fn test_rate_limiter_blocks_over_limit() {
     for _ in 0..5 {
         let _ = limiter.check("decrypt", "client_x");
     }
-    assert!(limiter.check("decrypt", "client_x").is_err(),
-        "Rate limiter must block requests over limit");
+    assert!(
+        limiter.check("decrypt", "client_x").is_err(),
+        "Rate limiter must block requests over limit"
+    );
 }
 
 #[test]
@@ -363,8 +447,10 @@ fn test_rate_limiter_isolates_clients() {
         let _ = limiter.check("decrypt", "client_a");
     }
     // client_a is exhausted, client_b must still work
-    assert!(limiter.check("decrypt", "client_b").is_ok(),
-        "Rate limiter must isolate clients independently");
+    assert!(
+        limiter.check("decrypt", "client_b").is_ok(),
+        "Rate limiter must isolate clients independently"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -386,7 +472,7 @@ fn test_validate_message_valid() {
 #[test]
 fn test_validate_key_weak_rejected() {
     use sibna_core::validation::validate_key;
-    assert!(validate_key(&[0u8; 32]).is_err());   // all zeros
+    assert!(validate_key(&[0u8; 32]).is_err()); // all zeros
     assert!(validate_key(&[0xFFu8; 32]).is_err()); // all same
 }
 
@@ -395,8 +481,8 @@ fn test_validate_key_weak_rejected() {
 #[cfg(feature = "p2p")]
 #[tokio::test]
 async fn test_p2p_local_connect_and_handshake() {
-    use sibna_core::p2p::{P2pNode, P2pConfig};
-    use sibna_core::{SecureContext, Config};
+    use sibna_core::p2p::{P2pConfig, P2pNode};
+    use sibna_core::{Config, SecureContext};
 
     // SIBNA-2026-037: P2P local connect now round-trips when both sides
     // pin `expected_peer_identity` (SIBNA-2026-020 enforcement).
@@ -435,11 +521,12 @@ async fn test_p2p_local_connect_and_handshake() {
     let addr_b = node_b.local_addr();
 
     // Run connection asynchronously
-    let b_task = tokio::spawn(async move {
-        node_b.accept().await.unwrap()
-    });
+    let b_task = tokio::spawn(async move { node_b.accept().await.unwrap() });
 
-    let peer_a = node_a.connect(&format!("127.0.0.1:{}", addr_b.port())).await.unwrap();
+    let peer_a = node_a
+        .connect(&format!("127.0.0.1:{}", addr_b.port()))
+        .await
+        .unwrap();
     let peer_b = b_task.await.unwrap();
 
     // Send messages back and forth
@@ -455,8 +542,8 @@ async fn test_p2p_local_connect_and_handshake() {
 #[cfg(feature = "p2p")]
 #[tokio::test]
 async fn test_p2p_bundle_export_import() {
-    use sibna_core::p2p::{P2pNode, P2pConfig};
-    use sibna_core::{SecureContext, Config};
+    use sibna_core::p2p::{P2pConfig, P2pNode};
+    use sibna_core::{Config, SecureContext};
 
     let ctx = SecureContext::new(Config::default(), None).unwrap();
     ctx.generate_identity().unwrap();
@@ -472,8 +559,8 @@ async fn test_p2p_bundle_export_import() {
 #[cfg(feature = "p2p")]
 #[tokio::test]
 async fn test_mdns_discovery() {
-    use sibna_core::p2p::{P2pNode, P2pConfig};
-    use sibna_core::{SecureContext, Config};
+    use sibna_core::p2p::{P2pConfig, P2pNode};
+    use sibna_core::{Config, SecureContext};
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
     // Alice
@@ -504,7 +591,9 @@ async fn test_mdns_discovery() {
     let mut browser = node_b.browse_peers().unwrap();
 
     let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), browser.recv()).await;
-    let peer = discovered.expect("Timeout waiting for mDNS discovery").expect("Channel closed");
+    let peer = discovered
+        .expect("Timeout waiting for mDNS discovery")
+        .expect("Channel closed");
 
     // Ensure we discovered Alice and the node name matches
     assert!(peer.name.contains("AliceDevice"));
@@ -514,8 +603,8 @@ async fn test_mdns_discovery() {
 #[cfg(feature = "p2p")]
 #[tokio::test]
 async fn test_hybrid_routing_fallback() {
-    use sibna_core::{HybridRouter, SecureContext, Config, P2pNode, P2pConfig};
-    
+    use sibna_core::{Config, HybridRouter, P2pConfig, P2pNode, SecureContext};
+
     // Setup Alice
     let ctx_a = SecureContext::new(Config::default(), None).unwrap();
     ctx_a.generate_identity().unwrap();
@@ -529,7 +618,10 @@ async fn test_hybrid_routing_fallback() {
     // 1. Send via Relay (Fallback) - should fail with SessionNotFound because no relay session exists
     // but this proves it reached the relay path.
     let res = router.send_message(&id_b, b"relay message").await;
-    assert!(res.is_err(), "Expected SessionNotFound error for relay path without session");
+    assert!(
+        res.is_err(),
+        "Expected SessionNotFound error for relay path without session"
+    );
 
     // 2. Setup P2P and send via Direct
     // After SIBNA-2026-020 fix, P2P requires `expected_peer_identity` to be set.
@@ -544,7 +636,7 @@ async fn test_hybrid_routing_fallback() {
     cfg_a.expected_peer_identity = Some(id_b_mock);
     let node_a = P2pNode::new(cfg_a, ctx_a).await.unwrap();
     router.set_p2p_node(node_a);
-    
+
     // We mock a P2P session by manually establishing one
     let mut cfg_b_mock = P2pConfig::default();
     cfg_b_mock.expected_peer_identity = Some(id_a);
@@ -555,13 +647,14 @@ async fn test_hybrid_routing_fallback() {
     // id_b is used only for the relay-fallback test.
 
     // Start Bob's listener
-    let _b_task = tokio::spawn(async move {
-        node_b.accept().await.unwrap()
-    });
+    let _b_task = tokio::spawn(async move { node_b.accept().await.unwrap() });
 
     // Alice connects
     let p2p_node = router.p2p_node().expect("P2P node not set");
-    let peer_for_alice = p2p_node.connect(&format!("127.0.0.1:{}", addr_b.port())).await.unwrap();
+    let peer_for_alice = p2p_node
+        .connect(&format!("127.0.0.1:{}", addr_b.port()))
+        .await
+        .unwrap();
     let recipient_id = peer_for_alice.peer_id().to_vec();
     router.add_p2p_peer(peer_for_alice);
 
@@ -577,7 +670,7 @@ async fn test_hybrid_routing_fallback() {
 #[cfg(feature = "pqc")]
 #[tokio::test]
 async fn test_p2p_pq_handshake_hybrid() {
-    use sibna_core::p2p::{P2pNode, P2pConfig};
+    use sibna_core::p2p::{P2pConfig, P2pNode};
 
     // Initialize two PQC-enabled nodes
     let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
@@ -600,12 +693,13 @@ async fn test_p2p_pq_handshake_hybrid() {
     let addr_b = node_b.local_addr();
 
     // Spawn responder
-    let handle_b = tokio::spawn(async move {
-        node_b.accept().await.unwrap()
-    });
+    let handle_b = tokio::spawn(async move { node_b.accept().await.unwrap() });
 
     // Initiator connects
-    let peer_a = node_a.connect(&format!("127.0.0.1:{}", addr_b.port())).await.expect("Alice failed to connect to Bob with PQC");
+    let peer_a = node_a
+        .connect(&format!("127.0.0.1:{}", addr_b.port()))
+        .await
+        .expect("Alice failed to connect to Bob with PQC");
     let peer_b = handle_b.await.unwrap();
 
     // Verify both have sessions (Alice's peer ID should be Bob's identity key)

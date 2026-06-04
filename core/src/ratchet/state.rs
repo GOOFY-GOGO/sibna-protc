@@ -4,10 +4,10 @@
 //! Manages the state for the Double Ratchet algorithm with secure serialization.
 
 use super::ChainKey;
-use x25519_dalek::{PublicKey, StaticSecret};
-use serde::{Serialize, Deserialize};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Double Ratchet State
 ///
@@ -62,10 +62,10 @@ pub struct DoubleRatchetState {
     /// Last activity timestamp
     pub last_activity: u64,
 
-    /// Messages sent counter 
+    /// Messages sent counter
     pub messages_sent: u64,
 
-    /// Messages received counter 
+    /// Messages received counter
     pub messages_received: u64,
 
     /// State version for migrations
@@ -216,7 +216,11 @@ impl DoubleRatchetState {
             has_sending_chain: self.sending_chain.is_some(),
             has_receiving_chain: self.receiving_chain.is_some(),
             sending_index: self.sending_chain.as_ref().map(|c| c.index()).unwrap_or(0),
-            receiving_index: self.receiving_chain.as_ref().map(|c| c.index()).unwrap_or(0),
+            receiving_index: self
+                .receiving_chain
+                .as_ref()
+                .map(|c| c.index())
+                .unwrap_or(0),
             skipped_keys_count: self.skipped_keys_count(),
             has_local_dh: self.dh_local.is_some(),
             has_remote_dh: self.dh_remote.is_some(),
@@ -315,7 +319,7 @@ pub struct StateSummary {
 /// Custom serialization for skipped message keys
 mod skipped_keys_serde {
     use super::*;
-    use serde::{Serialize, Deserialize, Serializer, Deserializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     #[derive(Serialize, Deserialize)]
     struct SkippedKeyEntry {
@@ -324,7 +328,10 @@ mod skipped_keys_serde {
         msg_key: [u8; 32],
     }
 
-    pub fn serialize<S>(map: &HashMap<([u8; 32], u64), [u8; 32]>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(
+        map: &HashMap<([u8; 32], u64), [u8; 32]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -340,7 +347,9 @@ mod skipped_keys_serde {
         entries.serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<([u8; 32], u64), [u8; 32]>, D::Error>
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<([u8; 32], u64), [u8; 32]>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -359,7 +368,7 @@ pub use crate::crypto::serde_helpers::dh_local_serde;
 
 /// Custom serialization for bytes
 mod serde_bytes {
-    use serde::{Serializer, Deserializer};
+    use serde::{Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -425,7 +434,7 @@ mod tests {
     #[test]
     fn test_state_expiration() {
         let mut state = DoubleRatchetState::new();
-        
+
         // New state should not be expired
         assert!(!state.is_expired());
 
@@ -433,7 +442,8 @@ mod tests {
         state.last_activity = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() - 31 * 86400;
+            .as_secs()
+            - 31 * 86400;
 
         assert!(state.is_expired());
     }
@@ -472,7 +482,7 @@ mod tests {
         // Restore
         assert!(state.restore_dh_keys().is_ok());
         // dh_local remains None because dh_local_bytes only contains public material.
-        assert!(state.dh_local.is_none()); 
+        assert!(state.dh_local.is_none());
         assert!(state.dh_remote.is_some());
     }
 
@@ -490,9 +500,9 @@ mod tests {
     fn test_state_zeroize() {
         let mut state = DoubleRatchetState::new();
         state.root_key = [0x42u8; 32];
-        
+
         state.zeroize();
-        
+
         assert!(state.root_key.iter().all(|&b| b == 0));
         assert!(state.skipped_message_keys.is_empty());
     }

@@ -28,7 +28,7 @@ mod ws;
 use db::DbState;
 
 use axum::{
-    extract::{Path, State, ConnectInfo, FromRef},
+    extract::{ConnectInfo, FromRef, Path, State},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -80,12 +80,18 @@ where
         state: &S,
     ) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
-        let auth_header = parts.headers.get(axum::http::header::AUTHORIZATION)
+        let auth_header = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
             .ok_or((StatusCode::UNAUTHORIZED, "Missing Authorization header"))?;
-        
-        let auth_str = auth_header.to_str().map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid Authorization header"))?;
-        let token = auth_str.strip_prefix("Bearer ").ok_or((StatusCode::UNAUTHORIZED, "Invalid Token Format"))?;
-        
+
+        let auth_str = auth_header
+            .to_str()
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid Authorization header"))?;
+        let token = auth_str
+            .strip_prefix("Bearer ")
+            .ok_or((StatusCode::UNAUTHORIZED, "Invalid Token Format"))?;
+
         match auth::validate_jwt(token, &app_state.rt.jwt_secret) {
             Some(claims) => Ok(AuthUser(claims)),
             None => Err((StatusCode::UNAUTHORIZED, "Invalid or expired token")),
@@ -99,13 +105,19 @@ where
 #[allow(dead_code)]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse().unwrap_or(8080);
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "8080".to_string())
+        .parse()
+        .unwrap_or(8080);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     run_server(listener, None).await
 }
 
-pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Option<String>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn run_server(
+    listener: tokio::net::TcpListener,
+    db_path_override: Option<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = listener.local_addr()?;
     eprintln!("DEBUG: Starting Sibna Server on {}", addr);
     // ... rest of the function (starting with Database)
@@ -124,38 +136,36 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
         .map(|v| v.to_lowercase() == "production")
         .unwrap_or(false);
 
-    let jwt_secret = Arc::new(
-        match std::env::var("SIBNA_JWT_SECRET") {
-            Ok(secret) if secret.len() >= 32 => secret,
-            Ok(short) => {
-                tracing::error!(
-                    "SIBNA_JWT_SECRET is set but too short ({} chars, minimum 32). \
+    let jwt_secret = Arc::new(match std::env::var("SIBNA_JWT_SECRET") {
+        Ok(secret) if secret.len() >= 32 => secret,
+        Ok(short) => {
+            tracing::error!(
+                "SIBNA_JWT_SECRET is set but too short ({} chars, minimum 32). \
                      Use a cryptographically random 64-char hex string.",
-                    short.len()
-                );
-                if is_production {
-                    return Err("SIBNA_JWT_SECRET too short — refusing to start in production".into());
-                }
-                warn!("Using short JWT secret in non-production mode — DO NOT use in production");
-                short
+                short.len()
+            );
+            if is_production {
+                return Err("SIBNA_JWT_SECRET too short — refusing to start in production".into());
             }
-            Err(_) => {
-                if is_production {
-                    tracing::error!(
-                        "SIBNA_JWT_SECRET is not set. Refusing to start in production. \
+            warn!("Using short JWT secret in non-production mode — DO NOT use in production");
+            short
+        }
+        Err(_) => {
+            if is_production {
+                tracing::error!(
+                    "SIBNA_JWT_SECRET is not set. Refusing to start in production. \
                          Generate a secret with: openssl rand -hex 32"
-                    );
-                    return Err("SIBNA_JWT_SECRET not set — refusing to start in production".into());
-                }
-                warn!(
-                    "SIBNA_JWT_SECRET not set — generating ephemeral secret. \
+                );
+                return Err("SIBNA_JWT_SECRET not set — refusing to start in production".into());
+            }
+            warn!(
+                "SIBNA_JWT_SECRET not set — generating ephemeral secret. \
                      ALL SESSIONS WILL BE INVALIDATED ON RESTART. \
                      Set SIBNA_ENV=production to prevent this."
-                );
-                hex::encode(random_bytes_32())
-            }
+            );
+            hex::encode(random_bytes_32())
         }
-    );
+    });
 
     let mut limiter = RateLimiter::new();
     limiter.set_global_enabled(true);
@@ -169,7 +179,7 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
         cooldown: Duration::from_millis(100),
         burst_size: 100,
     };
-    
+
     // Strict pre-auth IP-only rate limit. This bucket is consumed by the
     // `ip_rate_limit` middleware on every /v1/* request before the
     // AuthUser extractor runs. Burst of 50 requests, sustained 50/sec,
@@ -184,7 +194,7 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
         burst_size: 50,
     };
     limiter.add_limit("ip_unauth".to_string(), ip_unauth_limit);
-    
+
     limiter.add_limit("prekey_upload".to_string(), prekey_limit.clone());
     limiter.add_limit("prekey_fetch".to_string(), prekey_limit.clone());
     limiter.add_limit("auth_challenge".to_string(), prekey_limit.clone());
@@ -227,7 +237,12 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
         .merge(protected)
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(21 * 1024 * 1024)) // 21 MB to allow for large-test payloads
-        .layer(CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_headers(Any)
+                .allow_methods(Any),
+        )
         .with_state(state.clone());
 
     // Pruning Task
@@ -245,10 +260,14 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
                     if value.len() == 8 {
                         let mut b = [0u8; 8];
                         b.copy_from_slice(&value);
-                        if i64::from_be_bytes(b) < cutoff { to_delete.push(key); }
+                        if i64::from_be_bytes(b) < cutoff {
+                            to_delete.push(key);
+                        }
                     }
                 }
-                for key in to_delete { tree.remove(key).ok(); }
+                for key in to_delete {
+                    tree.remove(key).ok();
+                }
             }
         });
     }
@@ -259,31 +278,35 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
     // redb commits each transaction immediately, so no explicit flush is
     // required on shutdown — the database is always in a consistent state.
     let db_for_shutdown = state.db.clone();
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(async move {
-            #[cfg(unix)]
-            {
-                use tokio::signal::unix::{signal, SignalKind};
-                let mut sigterm = signal(SignalKind::terminate())
-                    .expect("failed to register SIGTERM handler");
-                let mut sigint = signal(SignalKind::interrupt())
-                    .expect("failed to register SIGINT handler");
-                tokio::select! {
-                    _ = sigterm.recv() => { info!("SIGTERM received — starting graceful shutdown"); }
-                    _ = sigint.recv()  => { info!("SIGINT received — starting graceful shutdown");  }
-                }
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
+            tokio::select! {
+                _ = sigterm.recv() => { info!("SIGTERM received — starting graceful shutdown"); }
+                _ = sigint.recv()  => { info!("SIGINT received — starting graceful shutdown");  }
             }
-            #[cfg(not(unix))]
-            {
-                tokio::signal::ctrl_c().await
-                    .expect("failed to register Ctrl-C handler");
-                info!("Ctrl-C received — starting graceful shutdown");
-            }
-            // redb commits on every write-transaction; no flush needed
-            drop(db_for_shutdown);
-            info!("Database handle dropped — shutdown complete");
-        })
-        .await?;
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to register Ctrl-C handler");
+            info!("Ctrl-C received — starting graceful shutdown");
+        }
+        // redb commits on every write-transaction; no flush needed
+        drop(db_for_shutdown);
+        info!("Database handle dropped — shutdown complete");
+    })
+    .await?;
     Ok(())
 }
 
@@ -306,7 +329,12 @@ fn enforce_rate_limit(
 ) -> Result<(), axum::response::Response> {
     let key = generate_rate_key(ip, identity);
     if let Err(e) = limiter.check(operation, &key) {
-        warn!("Rate limit exceeded for {} ({}): {}", operation, &identity[..identity.len().min(16)], e);
+        warn!(
+            "Rate limit exceeded for {} ({}): {}",
+            operation,
+            &identity[..identity.len().min(16)],
+            e
+        );
         return Err((StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response());
     }
     Ok(())
@@ -350,12 +378,15 @@ fn random_bytes_32() -> [u8; 32] {
 // Handlers
 
 async fn health_handler() -> impl IntoResponse {
-    (StatusCode::OK, Json(serde_json::json!({
-        "status": "ok",
-        "version": "3.0.0",
-        "transports": ["http", "websocket"],
-        "auth": "ed25519-jwt"
-    })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "version": "3.0.0",
+            "transports": ["http", "websocket"],
+            "auth": "ed25519-jwt"
+        })),
+    )
 }
 
 // PreKey Upload
@@ -404,15 +435,28 @@ async fn upload_prekey_handler(
         let existing: Vec<u8> = existing;
         if let Ok(existing_bundle) = sibna_core::handshake::PreKeyBundle::from_bytes(&existing) {
             if bundle.bundle_id == existing_bundle.bundle_id {
-                return (StatusCode::CONFLICT, "Replay attack detected: bundle_id reused").into_response();
+                return (
+                    StatusCode::CONFLICT,
+                    "Replay attack detected: bundle_id reused",
+                )
+                    .into_response();
             }
         }
     }
 
-    if state.db.tree_prekeys.insert(db_key.as_bytes(), bundle_bytes).is_err() {
+    if state
+        .db
+        .tree_prekeys
+        .insert(db_key.as_bytes(), bundle_bytes)
+        .is_err()
+    {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    info!("PreKey uploaded for Root {} Device {}", &root_id[..16], bundle.device_id);
+    info!(
+        "PreKey uploaded for Root {} Device {}",
+        &root_id[..16],
+        bundle.device_id
+    );
     StatusCode::OK.into_response()
 }
 
@@ -434,7 +478,7 @@ async fn fetch_prekey_handler(
 
     let prefix = format!("{}:", root_id);
     let resort_key = format!("prekey_resort:{}", root_id);
-    
+
     let mut fetched_bundles_hex = Vec::new();
     let mut keys_to_delete = Vec::new();
 
@@ -457,7 +501,10 @@ async fn fetch_prekey_handler(
                 if bundle.validate().is_ok() {
                     fetched_bundles_hex.push(hex::encode(&resort_bytes));
                     using_resort = true;
-                    info!("WARN: PreKey starvation for {} — using Last Resort Key!", &root_id[..16]);
+                    info!(
+                        "WARN: PreKey starvation for {} — using Last Resort Key!",
+                        &root_id[..16]
+                    );
                     // We DO NOT add it to keys_to_delete. It persists forever.
                 }
             }
@@ -472,14 +519,22 @@ async fn fetch_prekey_handler(
     for key in keys_to_delete {
         let _ = state.db.tree_prekeys.remove(key);
     }
-    
+
     if !using_resort {
-        info!("Fetched {} One-Time PreKey(s) and compacted for {}", fetched_bundles_hex.len(), &root_id[..16]);
+        info!(
+            "Fetched {} One-Time PreKey(s) and compacted for {}",
+            fetched_bundles_hex.len(),
+            &root_id[..16]
+        );
     }
 
-    (StatusCode::OK, Json(FetchPrekeyResponse {
-        bundles_hex: fetched_bundles_hex,
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(FetchPrekeyResponse {
+            bundles_hex: fetched_bundles_hex,
+        }),
+    )
+        .into_response()
 }
 
 async fn delete_prekey_handler(
@@ -489,13 +544,23 @@ async fn delete_prekey_handler(
 ) -> impl IntoResponse {
     // Verify the caller owns the identity key they are trying to delete.
     if claims.sub != root_id {
-        return (StatusCode::FORBIDDEN, "Cannot delete another user's prekeys").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Cannot delete another user's prekeys",
+        )
+            .into_response();
     }
 
     let prefix = format!("{}:", root_id);
     let mut deleted = false;
     for (key, _) in state.db.tree_prekeys.scan_prefix(prefix.as_bytes()) {
-        if state.db.tree_prekeys.remove(key).unwrap_or_default().is_some() {
+        if state
+            .db
+            .tree_prekeys
+            .remove(key)
+            .unwrap_or_default()
+            .is_some()
+        {
             deleted = true;
         }
     }
@@ -556,7 +621,10 @@ async fn send_message_handler(
     let value = serde_json::json!({ "envelope": envelope, "expires": ttl });
     if let Ok(bytes) = serde_json::to_vec(&value) {
         state.db.tree_queue.insert(db_key.as_bytes(), bytes).ok();
-        info!("Message queued for offline recipient {}", req.recipient_id.get(..16).unwrap_or(&req.recipient_id));
+        info!(
+            "Message queued for offline recipient {}",
+            req.recipient_id.get(..16).unwrap_or(&req.recipient_id)
+        );
     }
 
     StatusCode::ACCEPTED.into_response()
@@ -605,5 +673,9 @@ async fn inbox_handler(
         state.db.tree_queue.remove(key).ok();
     }
 
-    (StatusCode::OK, Json(serde_json::json!({ "messages": messages, "count": messages.len() }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "messages": messages, "count": messages.len() })),
+    )
+        .into_response()
 }

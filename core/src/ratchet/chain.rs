@@ -1,12 +1,12 @@
+use crate::crypto::{CryptoError, CryptoResult};
 use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use serde::{Serialize, Deserialize};
-use crate::crypto::{CryptoError, CryptoResult};
 
 const MESSAGE_KEY_SEED: u8 = 0x01;
-const CHAIN_KEY_SEED:   u8 = 0x02;
-const HEADER_KEY_SEED:  u8 = 0x03;
+const CHAIN_KEY_SEED: u8 = 0x02;
+const HEADER_KEY_SEED: u8 = 0x03;
 
 #[derive(Serialize, Deserialize)]
 pub struct ChainKey {
@@ -59,11 +59,13 @@ impl ChainKey {
     }
 
     pub fn next_message_key(&mut self) -> Option<[u8; 32]> {
-        if self.index >= self.max_messages { return None; }
+        if self.index >= self.max_messages {
+            return None;
+        }
         let message_key = self.derive_key(MESSAGE_KEY_SEED).ok()?;
-        let next_chain  = self.derive_key(CHAIN_KEY_SEED).ok()?;
+        let next_chain = self.derive_key(CHAIN_KEY_SEED).ok()?;
         self.key.zeroize();
-        self.key   = next_chain;
+        self.key = next_chain;
         self.index += 1;
         Some(message_key)
     }
@@ -75,17 +77,23 @@ impl ChainKey {
     }
 
     fn derive_key(&self, seed: u8) -> CryptoResult<[u8; 32]> {
-        let mut h = Hmac::<Sha256>::new_from_slice(&self.key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?;
+        let mut h =
+            Hmac::<Sha256>::new_from_slice(&self.key).map_err(|_| CryptoError::InvalidKeyLength)?;
         h.update(&[seed]);
         let mut out = [0u8; 32];
         out.copy_from_slice(&h.finalize().into_bytes()[..32]);
         Ok(out)
     }
 
-    pub fn index(&self) -> u64           { self.index }
-    pub fn clone_key(&self) -> [u8; 32]  { self.key }
-    pub fn remaining_messages(&self) -> u64 { self.max_messages.saturating_sub(self.index) }
+    pub fn index(&self) -> u64 {
+        self.index
+    }
+    pub fn clone_key(&self) -> [u8; 32] {
+        self.key
+    }
+    pub fn remaining_messages(&self) -> u64 {
+        self.max_messages.saturating_sub(self.index)
+    }
 
     pub fn age_secs(&self) -> u64 {
         crate::crypto::current_timestamp()
@@ -113,13 +121,17 @@ impl Clone for ChainKey {
 impl Zeroize for ChainKey {
     fn zeroize(&mut self) {
         self.key.zeroize();
-        self.index        = 0;
+        self.index = 0;
         self.reserved_until = 0;
     }
 }
 
 impl ZeroizeOnDrop for ChainKey {}
-impl Drop for ChainKey { fn drop(&mut self) { self.zeroize(); } }
+impl Drop for ChainKey {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -164,9 +176,12 @@ mod tests {
         let target = crate::ratchet::MAX_SKIPPED_MESSAGES as u64;
         let mut derived = 0u64;
         while derived < target {
-            assert!(chain.next_message_key().is_some(),
+            assert!(
+                chain.next_message_key().is_some(),
                 "default chain exhausted at {} (target {}) — SIBNA-2026-012 regression",
-                derived, target);
+                derived,
+                target
+            );
             derived += 1;
         }
         assert_eq!(derived, target);
@@ -174,12 +189,18 @@ mod tests {
         // After MAX_SKIPPED_MESSAGES, chain must still have headroom
         // up to DEFAULT_MAX_MESSAGES. Verify it produces a few more.
         for _ in 0..16 {
-            assert!(chain.next_message_key().is_some(),
-                "chain must have headroom past MAX_SKIPPED_MESSAGES");
+            assert!(
+                chain.next_message_key().is_some(),
+                "chain must have headroom past MAX_SKIPPED_MESSAGES"
+            );
             derived += 1;
         }
-        assert!(derived < ChainKey::DEFAULT_MAX_MESSAGES,
-            "derived {} should still be < DEFAULT_MAX_MESSAGES {}", derived, ChainKey::DEFAULT_MAX_MESSAGES);
+        assert!(
+            derived < ChainKey::DEFAULT_MAX_MESSAGES,
+            "derived {} should still be < DEFAULT_MAX_MESSAGES {}",
+            derived,
+            ChainKey::DEFAULT_MAX_MESSAGES
+        );
 
         // Finally, exhaust the chain fully and confirm exhaustion at the cap.
         while derived < ChainKey::DEFAULT_MAX_MESSAGES {
@@ -187,7 +208,9 @@ mod tests {
             derived += 1;
         }
         assert_eq!(derived, ChainKey::DEFAULT_MAX_MESSAGES);
-        assert!(chain.next_message_key().is_none(),
-            "chain must not produce a key at index == DEFAULT_MAX_MESSAGES");
+        assert!(
+            chain.next_message_key().is_none(),
+            "chain must not produce a key at index == DEFAULT_MAX_MESSAGES"
+        );
     }
 }

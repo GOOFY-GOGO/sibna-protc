@@ -22,20 +22,20 @@
 //! `metadata.rs` (line 121: `hasher.update(&[self.is_dummy as u8])`).
 //! This was a FALSE POSITIVE in the original report. Verified and documented.
 
-use crate::{SecureContext, ProtocolResult};
 use crate::error::ProtocolError;
 #[cfg(feature = "p2p")]
 use crate::p2p::{P2pNode, Peer};
 #[cfg(feature = "p2p")]
 use crate::transport::relay::RelayClient;
-use std::sync::Arc;
+use crate::{ProtocolResult, SecureContext};
 #[cfg(feature = "p2p")]
 use dashmap::DashMap;
-use tracing::warn;
-#[cfg(feature = "p2p")]
-use tracing::{info, debug};
 #[cfg(feature = "p2p")]
 use rand::Rng;
+use std::sync::Arc;
+use tracing::warn;
+#[cfg(feature = "p2p")]
+use tracing::{debug, info};
 
 // ── Security constants ────────────────────────────────────────────────────────
 
@@ -95,7 +95,8 @@ impl HybridRouter {
     }
 
     pub fn set_cover_traffic(&self, enabled: bool) {
-        self.cover_traffic_enabled.store(enabled, std::sync::atomic::Ordering::SeqCst);
+        self.cover_traffic_enabled
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Set the relay client for server-mediated message delivery.
@@ -136,7 +137,8 @@ impl HybridRouter {
         if plaintext.len() > MAX_MESSAGE_BYTES {
             warn!(
                 "SEND_REJECTED: payload {} bytes exceeds {} limit",
-                plaintext.len(), MAX_MESSAGE_BYTES
+                plaintext.len(),
+                MAX_MESSAGE_BYTES
             );
             return Err(ProtocolError::InvalidArgument);
         }
@@ -146,10 +148,17 @@ impl HybridRouter {
             if let Some(ref node) = self.p2p_node {
                 debug!("HybridRouter: P2P node available at {}", node.local_addr());
                 if let Some(peer) = self.active_peers.get(recipient_id) {
-                    debug!("Using existing P2P session for {}", hex::encode(recipient_id));
+                    debug!(
+                        "Using existing P2P session for {}",
+                        hex::encode(recipient_id)
+                    );
                     // FIX F-04: map to generic error, log details internally only
                     let res = peer.send_message(plaintext).await.map_err(|e| {
-                        warn!("P2P_SEND_FAILED: recipient={} err={:?}", hex::encode(recipient_id), e);
+                        warn!(
+                            "P2P_SEND_FAILED: recipient={} err={:?}",
+                            hex::encode(recipient_id),
+                            e
+                        );
                         ProtocolError::InternalError
                     });
                     if res.is_ok() {
@@ -173,7 +182,11 @@ impl HybridRouter {
         }
     }
 
-    pub async fn send_webrtc_signal(&self, recipient_id: &[u8], signal: crate::media::WebRtcSignal) -> ProtocolResult<()> {
+    pub async fn send_webrtc_signal(
+        &self,
+        recipient_id: &[u8],
+        signal: crate::media::WebRtcSignal,
+    ) -> ProtocolResult<()> {
         let payload = crate::media::ProtocolPayload::WebRtc(signal);
         let bytes = payload.to_bytes()?;
         self.send_message(recipient_id, &bytes).await
@@ -197,10 +210,12 @@ impl HybridRouter {
             ProtocolError::InvalidState
         })?;
 
-        let router     = Arc::new(self.clone());
+        let router = Arc::new(self.clone());
         let node_local = node.clone();
-        let cancel     = self.discovery_cancel.clone();
-        let seen_sessions = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::<String>::new()));
+        let cancel = self.discovery_cancel.clone();
+        let seen_sessions = std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashSet::<String>::new(),
+        ));
 
         tokio::spawn(async move {
             loop {
@@ -280,14 +295,14 @@ impl HybridRouter {
             loop {
                 ticker.tick().await;
 
-                let mut needs_rotation = false;
+                let needs_rotation;
                 {
                     let keystore = router.ctx.keystore();
                     let ks = keystore.read();
-                    match ks.get_signed_prekey() {
-                        Ok(spk) if !spk.is_expired() => needs_rotation = false,
-                        _ => needs_rotation = true,
-                    }
+                    needs_rotation = match ks.get_signed_prekey() {
+                        Ok(spk) if !spk.is_expired() => false,
+                        _ => true,
+                    };
                 }
 
                 if needs_rotation {
@@ -296,7 +311,7 @@ impl HybridRouter {
                     let mut ks = keystore.write();
                     if let Ok(new_pub) = ks.rotate_signed_prekey() {
                         info!("S_ROTATION: rotated to new SPK: {}", hex::encode(new_pub));
-                        
+
                         if let Some(ref _relay) = router.relay_client {
                             // Pending optimization for relay bundle upload
                         }
@@ -317,7 +332,9 @@ impl HybridRouter {
             ProtocolError::InvalidState
         })?;
 
-        let ciphertext = self.ctx.encrypt_message(recipient_id, plaintext, None)
+        let ciphertext = self
+            .ctx
+            .encrypt_message(recipient_id, plaintext, None)
             .map_err(|e| {
                 warn!("RELAY_ENCRYPT_FAILED: {:?}", e);
                 ProtocolError::EncryptionFailed
@@ -329,21 +346,21 @@ impl HybridRouter {
         })?;
 
         let mut sig_env = crate::metadata::SignedEnvelope {
-            recipient_id:  hex::encode(recipient_id),
-            payload_hex:   hex::encode(ciphertext),
-            sender_id:     hex::encode(&identity.ed25519_public),
-            timestamp:     chrono::Utc::now().timestamp(),
-            message_id:    hex::encode(rand::thread_rng().gen::<[u8; 16]>()),
+            recipient_id: hex::encode(recipient_id),
+            payload_hex: hex::encode(ciphertext),
+            sender_id: hex::encode(&identity.ed25519_public),
+            timestamp: chrono::Utc::now().timestamp(),
+            message_id: hex::encode(rand::thread_rng().gen::<[u8; 16]>()),
             signature_hex: String::new(),
-            compressed:    false,
-            is_dummy:      false,
+            compressed: false,
+            is_dummy: false,
         };
 
         let payload = sig_env.signing_payload();
         sig_env.signature_hex = hex::encode(identity.sign(&payload)?);
 
-        let envelope_json = serde_json::to_string(&sig_env)
-            .map_err(|_| ProtocolError::InvalidMessage)?;
+        let envelope_json =
+            serde_json::to_string(&sig_env).map_err(|_| ProtocolError::InvalidMessage)?;
 
         relay.send_envelope(&envelope_json).await
     }
@@ -354,7 +371,11 @@ impl HybridRouter {
     #[cfg(feature = "p2p")]
     pub fn add_p2p_peer(&self, peer: Peer) -> bool {
         if self.active_peers.len() >= MAX_ACTIVE_PEERS {
-            warn!("P2P_PEER_CAP: cap {} reached, refusing peer {}", MAX_ACTIVE_PEERS, hex::encode(peer.peer_id()));
+            warn!(
+                "P2P_PEER_CAP: cap {} reached, refusing peer {}",
+                MAX_ACTIVE_PEERS,
+                hex::encode(peer.peer_id())
+            );
             return false;
         }
         let id = peer.peer_id().to_vec();
@@ -367,14 +388,19 @@ impl HybridRouter {
 
     pub fn start_cover_traffic_loop(&self, min_delay_sec: u64, max_delay_sec: u64) {
         #[cfg(not(feature = "p2p"))]
-        { let _ = (min_delay_sec, max_delay_sec); }
+        {
+            let _ = (min_delay_sec, max_delay_sec);
+        }
 
         #[cfg(feature = "p2p")]
         {
             let router = self.clone();
             tokio::spawn(async move {
                 loop {
-                    if !router.cover_traffic_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+                    if !router
+                        .cover_traffic_enabled
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
                         break;
                     }
 
@@ -411,7 +437,10 @@ impl HybridRouter {
     #[cfg(feature = "p2p")]
     #[allow(dead_code)]
     fn send_dummy_to_relay(&self, recipient_id: &[u8]) -> ProtocolResult<()> {
-        debug!("COVER_TRAFFIC_DUMMY: recipient={}", hex::encode(recipient_id));
+        debug!(
+            "COVER_TRAFFIC_DUMMY: recipient={}",
+            hex::encode(recipient_id)
+        );
 
         let relay = self.relay_client.as_ref().ok_or_else(|| {
             warn!("COVER_TRAFFIC_SEND_FAILED: no relay client configured");
@@ -432,21 +461,21 @@ impl HybridRouter {
         // line 121: `hasher.update(&[self.is_dummy as u8])`.
         // Original audit finding #3 was a false positive.
         let mut sig_env = crate::metadata::SignedEnvelope {
-            recipient_id:  hex::encode(recipient_id),
-            payload_hex:   hex::encode(ciphertext),
-            sender_id:     hex::encode(&identity.ed25519_public),
-            timestamp:     chrono::Utc::now().timestamp(),
-            message_id:    hex::encode(rand::thread_rng().gen::<[u8; 16]>()),
+            recipient_id: hex::encode(recipient_id),
+            payload_hex: hex::encode(ciphertext),
+            sender_id: hex::encode(&identity.ed25519_public),
+            timestamp: chrono::Utc::now().timestamp(),
+            message_id: hex::encode(rand::thread_rng().gen::<[u8; 16]>()),
             signature_hex: String::new(),
-            compressed:    false,
-            is_dummy:      true, // ← hashed into signing_payload
+            compressed: false,
+            is_dummy: true, // ← hashed into signing_payload
         };
 
         let payload = sig_env.signing_payload();
         sig_env.signature_hex = hex::encode(identity.sign(&payload)?);
 
-        let envelope_json = serde_json::to_string(&sig_env)
-            .map_err(|_| ProtocolError::InvalidMessage)?;
+        let envelope_json =
+            serde_json::to_string(&sig_env).map_err(|_| ProtocolError::InvalidMessage)?;
 
         // Use tokio::spawn for async send from sync context
         let relay_clone = relay.clone();
@@ -468,10 +497,18 @@ impl HybridRouter {
 fn is_valid_peer_addr(addr: &std::net::SocketAddr) -> bool {
     let ip = addr.ip();
     // Reject unroutable / control addresses
-    if ip.is_loopback()    { return false; } // 127.x / ::1
-    if ip.is_multicast()   { return false; } // 224.x / ff00::/8
-    if ip.is_unspecified() { return false; } // 0.0.0.0 / ::
-    if addr.port() == 0    { return false; } // unassigned port
+    if ip.is_loopback() {
+        return false;
+    } // 127.x / ::1
+    if ip.is_multicast() {
+        return false;
+    } // 224.x / ff00::/8
+    if ip.is_unspecified() {
+        return false;
+    } // 0.0.0.0 / ::
+    if addr.port() == 0 {
+        return false;
+    } // unassigned port
     true
     // NOTE: RFC-1918 private addresses are intentionally allowed — mDNS
     // discovery is LAN-scoped by design. Revisit if the discovery layer

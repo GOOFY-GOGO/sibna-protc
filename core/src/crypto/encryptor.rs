@@ -2,12 +2,9 @@
 //!
 //! Provides high-level encryption with message numbers and replay protection.
 
-use super::{CryptoError, CryptoResult, SecureRandom, SecureMemory, KEY_LENGTH, NONCE_LENGTH};
-use super::super::validation::{validate_message, validate_associated_data};
-use chacha20poly1305::{
-    ChaCha20Poly1305, KeyInit,
-    aead::Aead,
-};
+use super::super::validation::{validate_associated_data, validate_message};
+use super::{CryptoError, CryptoResult, SecureMemory, SecureRandom, KEY_LENGTH, NONCE_LENGTH};
+use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Message header size
@@ -114,11 +111,15 @@ impl Encryptor {
         full_ad.extend_from_slice(&header);
 
         // Encrypt
-        let ciphertext = self.cipher
-            .encrypt(chacha20poly1305::Nonce::from_slice(&nonce), chacha20poly1305::aead::Payload {
-                msg: plaintext,
-                aad: &full_ad,
-            })
+        let ciphertext = self
+            .cipher
+            .encrypt(
+                chacha20poly1305::Nonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: plaintext,
+                    aad: &full_ad,
+                },
+            )
             .map_err(|_| CryptoError::EncryptionFailed)?;
 
         // Build final message
@@ -153,13 +154,19 @@ impl Encryptor {
 
         // Parse header
         let message_number = u64::from_le_bytes(
-            ciphertext[0..8].try_into().map_err(|_| CryptoError::InvalidCiphertext)?
+            ciphertext[0..8]
+                .try_into()
+                .map_err(|_| CryptoError::InvalidCiphertext)?,
         );
         let timestamp = u64::from_le_bytes(
-            ciphertext[8..16].try_into().map_err(|_| CryptoError::InvalidCiphertext)?
+            ciphertext[8..16]
+                .try_into()
+                .map_err(|_| CryptoError::InvalidCiphertext)?,
         );
         let padding = u64::from_le_bytes(
-            ciphertext[16..24].try_into().map_err(|_| CryptoError::InvalidCiphertext)?
+            ciphertext[16..24]
+                .try_into()
+                .map_err(|_| CryptoError::InvalidCiphertext)?,
         );
 
         // Check timestamp (prevent replay of old messages)
@@ -197,11 +204,15 @@ impl Encryptor {
         full_ad.extend_from_slice(&header);
 
         // Decrypt
-        let plaintext = self.cipher
-            .decrypt(chacha20poly1305::Nonce::from_slice(nonce), chacha20poly1305::aead::Payload {
-                msg: encrypted,
-                aad: &full_ad,
-            })
+        let plaintext = self
+            .cipher
+            .decrypt(
+                chacha20poly1305::Nonce::from_slice(nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: encrypted,
+                    aad: &full_ad,
+                },
+            )
             .map_err(|_| CryptoError::AuthenticationFailed)?;
 
         // Update replay protection state
@@ -216,7 +227,12 @@ impl Encryptor {
     }
 
     /// Build message header with specific padding
-    fn build_header_with_padding(&self, message_number: u64, timestamp: u64, padding: u64) -> Vec<u8> {
+    fn build_header_with_padding(
+        &self,
+        message_number: u64,
+        timestamp: u64,
+        padding: u64,
+    ) -> Vec<u8> {
         let mut header = Vec::with_capacity(MESSAGE_HEADER_SIZE);
         header.extend_from_slice(&message_number.to_le_bytes());
         header.extend_from_slice(&timestamp.to_le_bytes());
@@ -242,10 +258,8 @@ impl Encryptor {
 
         // Size backstop: keep newest entries when still over cap after age eviction.
         if self.seen_numbers.len() > self.max_seen_numbers {
-            let mut entries: Vec<(u64, u64)> = self.seen_numbers
-                .iter()
-                .map(|(&k, &v)| (k, v))
-                .collect();
+            let mut entries: Vec<(u64, u64)> =
+                self.seen_numbers.iter().map(|(&k, &v)| (k, v)).collect();
             entries.sort_unstable_by_key(|&(_, ts)| ts);
             let to_remove = entries.len() - self.max_seen_numbers;
             for (k, _) in entries.into_iter().take(to_remove) {
@@ -312,10 +326,9 @@ impl StreamingEncryptor {
             let chunk = &data[start..end];
 
             // Encrypt chunk with chunk index as associated data
-            let encrypted = self.encryptor.encrypt_message(
-                chunk,
-                &self.chunk_counter.to_le_bytes(),
-            )?;
+            let encrypted = self
+                .encryptor
+                .encrypt_message(chunk, &self.chunk_counter.to_le_bytes())?;
 
             // Write chunk length
             result.extend_from_slice(&(encrypted.len() as u32).to_le_bytes());
@@ -334,7 +347,11 @@ impl StreamingEncryptor {
             return Err(CryptoError::InvalidCiphertext);
         }
 
-        let num_chunks = u64::from_le_bytes(data[0..8].try_into().map_err(|_| CryptoError::InvalidCiphertext)?);
+        let num_chunks = u64::from_le_bytes(
+            data[0..8]
+                .try_into()
+                .map_err(|_| CryptoError::InvalidCiphertext)?,
+        );
         let mut result = Vec::new();
         let mut offset = 8;
 
@@ -344,7 +361,9 @@ impl StreamingEncryptor {
             }
 
             let chunk_len = u32::from_le_bytes(
-                data[offset..offset + 4].try_into().map_err(|_| CryptoError::InvalidCiphertext)?
+                data[offset..offset + 4]
+                    .try_into()
+                    .map_err(|_| CryptoError::InvalidCiphertext)?,
             ) as usize;
             offset += 4;
 
@@ -353,10 +372,9 @@ impl StreamingEncryptor {
             }
 
             let encrypted_chunk = &data[offset..offset + chunk_len];
-            let chunk = self.encryptor.decrypt_message(
-                encrypted_chunk,
-                &self.chunk_counter.to_le_bytes(),
-            )?;
+            let chunk = self
+                .encryptor
+                .decrypt_message(encrypted_chunk, &self.chunk_counter.to_le_bytes())?;
 
             result.extend_from_slice(&chunk);
             offset += chunk_len;

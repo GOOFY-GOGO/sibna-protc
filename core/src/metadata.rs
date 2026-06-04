@@ -27,8 +27,7 @@ pub fn pad_payload(payload: &[u8]) -> Result<Vec<u8>, PaddingError> {
 
 /// Remove padding from a received payload
 pub fn unpad_payload(padded: &[u8]) -> Result<Vec<u8>, PaddingError> {
-    crate::crypto::padding::unpad_message(padded)
-        .map_err(|_| PaddingError::InvalidPadding)
+    crate::crypto::padding::unpad_message(padded).map_err(|_| PaddingError::InvalidPadding)
 }
 
 #[allow(dead_code)]
@@ -84,7 +83,7 @@ pub struct SignedEnvelope {
 impl SignedEnvelope {
     /// Compute the canonical signing payload
     pub fn signing_payload(&self) -> Vec<u8> {
-        use sha2::{Sha512, Digest};
+        use sha2::{Digest, Sha512};
         let mut hasher = Sha512::new();
         hasher.update(self.recipient_id.as_bytes());
         hasher.update(self.payload_hex.as_bytes());
@@ -96,23 +95,25 @@ impl SignedEnvelope {
 
     /// Verify the Ed25519 signature
     pub fn verify(&self) -> Result<(), EnvelopeError> {
-        let sig_bytes = hex::decode(&self.signature_hex)
-            .map_err(|_| EnvelopeError::MalformedSignature)?;
-        let key_bytes = hex::decode(&self.sender_id)
-            .map_err(|_| EnvelopeError::MalformedSenderKey)?;
+        let sig_bytes =
+            hex::decode(&self.signature_hex).map_err(|_| EnvelopeError::MalformedSignature)?;
+        let key_bytes =
+            hex::decode(&self.sender_id).map_err(|_| EnvelopeError::MalformedSenderKey)?;
 
         if key_bytes.len() != 32 || sig_bytes.len() != 64 {
             return Err(EnvelopeError::MalformedSignature);
         }
 
-        let key_array: [u8; 32] = key_bytes.try_into()
+        let key_array: [u8; 32] = key_bytes
+            .try_into()
             .map_err(|_| EnvelopeError::MalformedSenderKey)?;
-        let sig_array: [u8; 64] = sig_bytes.try_into()
+        let sig_array: [u8; 64] = sig_bytes
+            .try_into()
             .map_err(|_| EnvelopeError::MalformedSignature)?;
 
-        use ed25519_dalek::{VerifyingKey, Signature, Verifier};
-        let vk = VerifyingKey::from_bytes(&key_array)
-            .map_err(|_| EnvelopeError::InvalidSenderKey)?;
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        let vk =
+            VerifyingKey::from_bytes(&key_array).map_err(|_| EnvelopeError::InvalidSenderKey)?;
         let sig = Signature::from_bytes(&sig_array);
         let payload = self.signing_payload();
 
@@ -182,8 +183,8 @@ mod tests {
         let medium = vec![0u8; 800];
         let s = pad_payload(small).expect("a").len();
         let m = pad_payload(&medium).expect("b").len();
-        assert!(s >= PADDING_BLOCK_SIZE && s <= 8 * PADDING_BLOCK_SIZE);
-        assert!(m >= PADDING_BLOCK_SIZE && m <= 8 * PADDING_BLOCK_SIZE);
+        assert!((PADDING_BLOCK_SIZE..=8 * PADDING_BLOCK_SIZE).contains(&s));
+        assert!((PADDING_BLOCK_SIZE..=8 * PADDING_BLOCK_SIZE).contains(&m));
         assert_eq!(s % PADDING_BLOCK_SIZE, 0);
         assert_eq!(m % PADDING_BLOCK_SIZE, 0);
     }

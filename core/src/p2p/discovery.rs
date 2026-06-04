@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use super::{P2pResult, P2pError};
+use super::{P2pError, P2pResult};
 
 const SIBNA_SERVICE_TYPE: &str = "_sibna._tcp.local.";
 
@@ -53,12 +53,13 @@ impl MdnsDiscovery {
     ///
     /// A random session token is generated for this mDNS session.  The caller's
     /// long-term peer ID is **not** used — it is never broadcast over mDNS.
-    pub fn new(
-        bind_addr: SocketAddr,
-        node_name: Option<&str>,
-    ) -> P2pResult<Self> {
-        let daemon = ServiceDaemon::new()
-            .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("mDNS init: {}", e))))?;
+    pub fn new(bind_addr: SocketAddr, node_name: Option<&str>) -> P2pResult<Self> {
+        let daemon = ServiceDaemon::new().map_err(|e| {
+            P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("mDNS init: {}", e),
+            ))
+        })?;
 
         // Generate a random session token (not the real peer ID).
         let mut token_bytes = [0u8; SESSION_TOKEN_LEN];
@@ -79,10 +80,13 @@ impl MdnsDiscovery {
 
         // If bind_addr is wildcard, we must resolve it to a real IP for mDNS advertisement
         let ad_ip = if bind_addr.ip().is_unspecified() {
-            if_addrs::get_if_addrs().ok()
+            if_addrs::get_if_addrs()
+                .ok()
                 .and_then(|ifs: Vec<if_addrs::Interface>| {
                     ifs.into_iter()
-                        .find(|iface: &if_addrs::Interface| !iface.is_loopback() && matches!(iface.addr, if_addrs::IfAddr::V4(_)))
+                        .find(|iface: &if_addrs::Interface| {
+                            !iface.is_loopback() && matches!(iface.addr, if_addrs::IfAddr::V4(_))
+                        })
                         .map(|iface| iface.addr.ip())
                 })
                 .unwrap_or_else(|| bind_addr.ip())
@@ -98,12 +102,20 @@ impl MdnsDiscovery {
             ad_ip.to_string(),
             bind_addr.port(),
             Some(properties),
-        ).map_err(|e| P2pError::InvalidMessage(format!("mDNS service info: {}", e)))?;
+        )
+        .map_err(|e| P2pError::InvalidMessage(format!("mDNS service info: {}", e)))?;
 
-        daemon.register(service_info)
-            .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("mDNS register: {}", e))))?;
+        daemon.register(service_info).map_err(|e| {
+            P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("mDNS register: {}", e),
+            ))
+        })?;
 
-        debug!("mDNS advertiser started: {} -> {}", instance_name, bind_addr);
+        debug!(
+            "mDNS advertiser started: {} -> {}",
+            instance_name, bind_addr
+        );
 
         Ok(Self {
             daemon,
@@ -118,8 +130,12 @@ impl MdnsDiscovery {
     /// as peers pop online or disappear. For this simple MVP, we just yield
     /// a continuous stream of fully resolved peer addresses.
     pub fn browse_peers(&self) -> P2pResult<mpsc::Receiver<DiscoveredPeer>> {
-        let receiver = self.daemon.browse(&self.service_type)
-            .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("mDNS browse: {}", e))))?;
+        let receiver = self.daemon.browse(&self.service_type).map_err(|e| {
+            P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("mDNS browse: {}", e),
+            ))
+        })?;
 
         // Expose a tokio stream to the user to abstract away mdns-sd threads
         let (tx, rx) = mpsc::channel(100);

@@ -1,15 +1,15 @@
 //! Double Ratchet (Signal spec: https://signal.org/docs/specifications/doubleratchet/)
 
 pub(crate) mod chain;
-pub mod state;
 pub mod session;
+pub mod state;
 
 pub use chain::*;
-pub use state::*;
 pub use session::*;
+pub use state::*;
 
 use crate::error::{ProtocolError, ProtocolResult};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 pub const MAX_SKIPPED_MESSAGES: usize = 2000;
 pub const MAX_MESSAGE_KEY_AGE_SECS: u64 = 86400;
@@ -52,9 +52,21 @@ impl RatchetHeader {
         dh_public.copy_from_slice(&data[0..32]);
         Ok(Self {
             dh_public,
-            message_number:       u64::from_le_bytes(data[32..40].try_into().map_err(|_| ProtocolError::InvalidMessage)?),
-            previous_chain_length: u64::from_le_bytes(data[40..48].try_into().map_err(|_| ProtocolError::InvalidMessage)?),
-            timestamp:             u64::from_le_bytes(data[48..56].try_into().map_err(|_| ProtocolError::InvalidMessage)?),
+            message_number: u64::from_le_bytes(
+                data[32..40]
+                    .try_into()
+                    .map_err(|_| ProtocolError::InvalidMessage)?,
+            ),
+            previous_chain_length: u64::from_le_bytes(
+                data[40..48]
+                    .try_into()
+                    .map_err(|_| ProtocolError::InvalidMessage)?,
+            ),
+            timestamp: u64::from_le_bytes(
+                data[48..56]
+                    .try_into()
+                    .map_err(|_| ProtocolError::InvalidMessage)?,
+            ),
         })
     }
 
@@ -80,8 +92,8 @@ impl RatchetHeader {
     /// Encrypt the header using a key derived from the chain key.
     /// Wire format: nonce(12) || encrypted_header(56) || tag(16)
     pub fn encrypt(&self, header_key: &[u8; 32]) -> ProtocolResult<Vec<u8>> {
-        use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
         use crate::crypto::SecureRandom;
+        use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
 
         let cipher = ChaCha20Poly1305::new(header_key.into());
         let mut rng = SecureRandom::new().map_err(|_| ProtocolError::InternalError)?;
@@ -89,7 +101,8 @@ impl RatchetHeader {
         rng.fill_bytes(&mut nonce_bytes);
 
         let plaintext = self.to_bytes();
-        let encrypted = cipher.encrypt(&nonce_bytes.into(), plaintext.as_ref())
+        let encrypted = cipher
+            .encrypt(&nonce_bytes.into(), plaintext.as_ref())
             .map_err(|_| ProtocolError::EncryptionFailed)?;
 
         let mut out = Vec::with_capacity(ENCRYPTED_HEADER_NONCE_SIZE + encrypted.len());
@@ -101,7 +114,7 @@ impl RatchetHeader {
     /// Decrypt an encrypted header using a key derived from the chain key.
     /// Wire format: nonce(12) || encrypted_header(56) || tag(16)
     pub fn decrypt(data: &[u8], header_key: &[u8; 32]) -> ProtocolResult<Self> {
-        use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
+        use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
 
         if data.len() < ENCRYPTED_HEADER_NONCE_SIZE + 16 {
             return Err(ProtocolError::InvalidMessage);
@@ -111,7 +124,8 @@ impl RatchetHeader {
         let nonce = &data[..ENCRYPTED_HEADER_NONCE_SIZE];
         let ciphertext = &data[ENCRYPTED_HEADER_NONCE_SIZE..];
 
-        let plaintext = cipher.decrypt(nonce.into(), ciphertext)
+        let plaintext = cipher
+            .decrypt(nonce.into(), ciphertext)
             .map_err(|_| ProtocolError::DecryptionFailed)?;
 
         Self::from_bytes(&plaintext)
@@ -135,8 +149,7 @@ impl SkippedMessageKey {
     }
 
     pub fn is_expired(&self) -> bool {
-        crate::crypto::current_timestamp()
-            .unwrap_or(self.created_at)
+        crate::crypto::current_timestamp().unwrap_or(self.created_at)
             > self.created_at + MAX_MESSAGE_KEY_AGE_SECS
     }
 }
@@ -170,7 +183,7 @@ impl RatchetMessage {
             return Err(ProtocolError::InvalidMessage);
         }
         Ok(Self {
-            header:     RatchetHeader::from_bytes(&data[..HEADER_SIZE])?,
+            header: RatchetHeader::from_bytes(&data[..HEADER_SIZE])?,
             ciphertext: data[HEADER_SIZE..].to_vec(),
         })
     }
@@ -192,7 +205,9 @@ impl RatchetMessage {
         data.len() >= ENCRYPTED_HEADER_SIZE + 29
     }
 
-    pub fn size(&self) -> usize { HEADER_SIZE + self.ciphertext.len() }
+    pub fn size(&self) -> usize {
+        HEADER_SIZE + self.ciphertext.len()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

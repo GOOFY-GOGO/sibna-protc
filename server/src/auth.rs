@@ -1,5 +1,5 @@
 //! Authentication Layer — JWT Challenge-Response
-//! 
+//!
 //! Zero-trust identity binding: clients prove they own the Ed25519 key
 //! by signing a server-issued challenge. No passwords stored.
 //!
@@ -7,20 +7,20 @@
 //! N-03: Challenge is now stored as HMAC-SHA256(challenge, jwt_secret) rather
 //!       than plaintext. Prevents DB-read attacks from recovering live challenges.
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use serde::{Deserialize, Serialize};
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, Algorithm};
-use ed25519_dalek::{VerifyingKey, Signature};
-use ed25519_dalek::Verifier;
-use chrono::Utc;
-use rand::RngCore;
+use crate::{enforce_rate_limit, AppState};
 use axum::extract::ConnectInfo;
-use std::net::SocketAddr;
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use chrono::Utc;
+use ed25519_dalek::Verifier;
+use ed25519_dalek::{Signature, VerifyingKey};
 use hmac::{Hmac, Mac};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::net::SocketAddr;
 use subtle::ConstantTimeEq;
 use tracing::warn;
-use crate::{AppState, enforce_rate_limit};
 
 /// JWT claims
 #[derive(Serialize, Deserialize, Clone)]
@@ -77,13 +77,22 @@ pub async fn challenge_handler(
     Json(req): Json<RegisterRequest>,
 ) -> impl IntoResponse {
     // Rate limit the challenge endpoint
-    if let Err(r) = enforce_rate_limit(&state.rt.limiter, "auth_challenge", &addr, &req.identity_key_hex) {
+    if let Err(r) = enforce_rate_limit(
+        &state.rt.limiter,
+        "auth_challenge",
+        &addr,
+        &req.identity_key_hex,
+    ) {
         return r;
     }
 
     // Validate identity key length
     if req.identity_key_hex.len() != 64 {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid identity_key length"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid identity_key length"})),
+        )
+            .into_response();
     }
 
     // Generate 32-byte challenge
@@ -103,12 +112,20 @@ pub async fn challenge_handler(
     let challenge_mac = hex::encode(mac.finalize().into_bytes());
 
     let value = format!("{}:{}:{}", challenge_hex, challenge_mac, expires_at);
-    state.db.tree_challenges.insert(db_key.as_bytes(), value.as_bytes()).ok();
+    state
+        .db
+        .tree_challenges
+        .insert(db_key.as_bytes(), value.as_bytes())
+        .ok();
 
-    (StatusCode::OK, Json(ChallengeResponse {
-        challenge_hex,
-        expires_in: 60,
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(ChallengeResponse {
+            challenge_hex,
+            expires_in: 60,
+        }),
+    )
+        .into_response()
 }
 
 /// POST /v1/auth/prove — verify signature, issue JWT
@@ -118,7 +135,12 @@ pub async fn prove_handler(
     Json(req): Json<ProveRequest>,
 ) -> impl IntoResponse {
     // Rate limit the prove endpoint
-    if let Err(r) = enforce_rate_limit(&state.rt.limiter, "auth_prove", &addr, &req.identity_key_hex) {
+    if let Err(r) = enforce_rate_limit(
+        &state.rt.limiter,
+        "auth_prove",
+        &addr,
+        &req.identity_key_hex,
+    ) {
         return r;
     }
 
@@ -151,13 +173,24 @@ pub async fn prove_handler(
         Ok(b) => b,
         Err(_) => {
             state.db.tree_challenges.remove(db_key.as_bytes()).ok();
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Challenge integrity error").into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Challenge integrity error",
+            )
+                .into_response();
         }
     };
     if computed_mac_bytes.ct_eq(&stored_mac_bytes[..]).unwrap_u8() == 0 {
-        warn!("AUTH_PROVE: challenge HMAC mismatch — possible DB tampering for {}", &req.identity_key_hex[..16.min(req.identity_key_hex.len())]);
+        warn!(
+            "AUTH_PROVE: challenge HMAC mismatch — possible DB tampering for {}",
+            &req.identity_key_hex[..16.min(req.identity_key_hex.len())]
+        );
         state.db.tree_challenges.remove(db_key.as_bytes()).ok();
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Challenge integrity error").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Challenge integrity error",
+        )
+            .into_response();
     }
 
     let expected_challenge_hex = stored_challenge_hex;
@@ -184,11 +217,19 @@ pub async fn prove_handler(
         Ok(b) => b,
         Err(_) => {
             state.db.tree_challenges.remove(db_key.as_bytes()).ok();
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Challenge integrity error").into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Challenge integrity error",
+            )
+                .into_response();
         }
     };
 
-    if req_challenge_bytes.ct_eq(&expected_challenge_bytes).unwrap_u8() == 0 {
+    if req_challenge_bytes
+        .ct_eq(&expected_challenge_bytes)
+        .unwrap_u8()
+        == 0
+    {
         return (StatusCode::UNAUTHORIZED, "Challenge mismatch").into_response();
     }
 
@@ -243,21 +284,35 @@ pub async fn prove_handler(
     };
 
     let secret = state.rt.jwt_secret.as_bytes();
-    let token = match encode(&Header::default(), &claims, &EncodingKey::from_secret(secret)) {
+    let token = match encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret),
+    ) {
         Ok(t) => t,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to issue token").into_response(),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to issue token").into_response()
+        }
     };
 
-    (StatusCode::OK, Json(TokenResponse {
-        token,
-        expires_in: 86400,
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(TokenResponse {
+            token,
+            expires_in: 86400,
+        }),
+    )
+        .into_response()
 }
 
 /// Validate a Bearer token from Authorization header
 pub fn validate_jwt(token: &str, secret: &str) -> Option<Claims> {
     let validation = Validation::new(Algorithm::HS256);
-    decode::<Claims>(token, &DecodingKey::from_secret(secret.as_bytes()), &validation)
-        .ok()
-        .map(|d| d.claims)
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .ok()
+    .map(|d| d.claims)
 }

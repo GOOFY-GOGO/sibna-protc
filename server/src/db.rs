@@ -48,7 +48,11 @@ impl RedbTree {
 
     /// Insert or overwrite a key-value pair.
     /// Opens a short-lived write transaction and commits immediately.
-    pub fn insert(&self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn insert(
+        &self,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(self.table_def())?;
@@ -59,7 +63,10 @@ impl RedbTree {
     }
 
     /// Look up a key.  Returns `Ok(None)` when the key or table is absent.
-    pub fn get(&self, key: impl AsRef<[u8]>) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn get(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
         let read_txn = self.db.begin_read()?;
         let table = match read_txn.open_table(self.table_def()) {
             Ok(t) => t,
@@ -72,7 +79,10 @@ impl RedbTree {
     }
 
     /// Remove a key.  Returns the old value if it existed.
-    pub fn remove(&self, key: impl AsRef<[u8]>) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn remove(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
         let write_txn = self.db.begin_write()?;
         let result;
         {
@@ -149,7 +159,9 @@ pub struct DbState {
 
 /// Open (or create) the redb database at `path` and ensure all four tables
 /// exist.
-pub(crate) fn open_db(path: impl AsRef<Path>) -> Result<DbState, Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) fn open_db(
+    path: impl AsRef<Path>,
+) -> Result<DbState, Box<dyn std::error::Error + Send + Sync>> {
     let db = Arc::new(Database::create(path)?);
 
     // Ensure tables exist — open_table on a WriteTransaction creates them.
@@ -162,7 +174,10 @@ pub(crate) fn open_db(path: impl AsRef<Path>) -> Result<DbState, Box<dyn std::er
         write_txn.commit()?;
     }
 
-    let make = |kind: TableKind| RedbTree { db: db.clone(), kind };
+    let make = |kind: TableKind| RedbTree {
+        db: db.clone(),
+        kind,
+    };
 
     Ok(DbState {
         db: db.clone(),

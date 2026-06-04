@@ -1,9 +1,9 @@
 //! WebRTC Signaling Bridge
-//! 
+//!
 //! Provides secure transport of WebRTC negotiation payloads (SDP Offer/Answer
 //! and ICE Candidates) over the Sibna Protocol's encrypted channels.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// WebRTC Signaling Message Types
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,11 +43,14 @@ pub enum ProtocolPayload {
 impl ProtocolPayload {
     /// Serialize payload to raw bytes for the encryptor
     pub fn to_bytes(&self) -> Result<Vec<u8>, crate::error::ProtocolError> {
-        bincode::serde::encode_to_vec(self, bincode::config::legacy()).map_err(|_| crate::error::ProtocolError::InvalidMessage)
+        bincode::serde::encode_to_vec(self, bincode::config::legacy())
+            .map_err(|_| crate::error::ProtocolError::InvalidMessage)
     }
 
     /// Deserialize payload from a decrypted byte stream
     pub fn from_bytes(data: &[u8]) -> Result<Self, crate::error::ProtocolError> {
-        bincode::serde::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v).map_err(|_| crate::error::ProtocolError::InvalidMessage)
+        bincode::serde::decode_from_slice(data, bincode::config::legacy())
+            .map(|(v, _)| v)
+            .map_err(|_| crate::error::ProtocolError::InvalidMessage)
     }
 }

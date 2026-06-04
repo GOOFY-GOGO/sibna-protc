@@ -4,10 +4,10 @@
 //! Implements rate limiting for cryptographic operations to prevent
 //! brute force attacks and resource exhaustion.
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Rate limiter for cryptographic operations
 #[derive(Clone)]
@@ -95,7 +95,9 @@ impl Default for ClientCounter {
             last_day: now,
             cooldown_until: None,
             burst_tokens: 0, // Tokens are granted on first refill call
-            last_refill: now.checked_sub(std::time::Duration::from_secs(60)).unwrap_or(now),
+            last_refill: now
+                .checked_sub(std::time::Duration::from_secs(60))
+                .unwrap_or(now),
         }
     }
 }
@@ -140,9 +142,18 @@ pub enum RateLimitError {
 impl std::fmt::Display for RateLimitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::RateExceeded { operation, limit_type, retry_after } => {
-                write!(f, "Rate limit exceeded for {} ({}). Retry after {:?}s", 
-                       operation, limit_type, retry_after.as_secs())
+            Self::RateExceeded {
+                operation,
+                limit_type,
+                retry_after,
+            } => {
+                write!(
+                    f,
+                    "Rate limit exceeded for {} ({}). Retry after {:?}s",
+                    operation,
+                    limit_type,
+                    retry_after.as_secs()
+                )
             }
             Self::CooldownActive(remaining) => {
                 write!(f, "Cooldown active. Retry after {:?}s", remaining.as_secs())
@@ -183,56 +194,71 @@ impl RateLimiter {
     /// Create a new rate limiter with default limits
     pub fn new() -> Self {
         let mut limits = HashMap::new();
-        
+
         // Decryption operations (expensive)
-        limits.insert("decrypt".to_string(), OperationLimit {
-            max_per_second: 5,
-            max_per_minute: 50,
-            max_per_hour: 500,
-            max_per_day: 5000,
-            cooldown: Duration::from_secs(120),
-            burst_size: 5,
-        });
-        
+        limits.insert(
+            "decrypt".to_string(),
+            OperationLimit {
+                max_per_second: 5,
+                max_per_minute: 50,
+                max_per_hour: 500,
+                max_per_day: 5000,
+                cooldown: Duration::from_secs(120),
+                burst_size: 5,
+            },
+        );
+
         // Handshake operations (very expensive)
-        limits.insert("handshake".to_string(), OperationLimit {
-            max_per_second: 1,
-            max_per_minute: 10,
-            max_per_hour: 100,
-            max_per_day: 1000,
-            cooldown: Duration::from_secs(300),
-            burst_size: 2,
-        });
-        
+        limits.insert(
+            "handshake".to_string(),
+            OperationLimit {
+                max_per_second: 1,
+                max_per_minute: 10,
+                max_per_hour: 100,
+                max_per_day: 1000,
+                cooldown: Duration::from_secs(300),
+                burst_size: 2,
+            },
+        );
+
         // Encryption operations (cheaper)
-        limits.insert("encrypt".to_string(), OperationLimit {
-            max_per_second: 20,
-            max_per_minute: 200,
-            max_per_hour: 2000,
-            max_per_day: 20000,
-            cooldown: Duration::from_secs(30),
-            burst_size: 10,
-        });
-        
+        limits.insert(
+            "encrypt".to_string(),
+            OperationLimit {
+                max_per_second: 20,
+                max_per_minute: 200,
+                max_per_hour: 2000,
+                max_per_day: 20000,
+                cooldown: Duration::from_secs(30),
+                burst_size: 10,
+            },
+        );
+
         // Key operations (very sensitive)
-        limits.insert("key_gen".to_string(), OperationLimit {
-            max_per_second: 2,
-            max_per_minute: 20,
-            max_per_hour: 100,
-            max_per_day: 1000,
-            cooldown: Duration::from_secs(600),
-            burst_size: 2,
-        });
+        limits.insert(
+            "key_gen".to_string(),
+            OperationLimit {
+                max_per_second: 2,
+                max_per_minute: 20,
+                max_per_hour: 100,
+                max_per_day: 1000,
+                cooldown: Duration::from_secs(600),
+                burst_size: 2,
+            },
+        );
 
         // Session creation
-        limits.insert("create_session".to_string(), OperationLimit {
-            max_per_second: 3,
-            max_per_minute: 30,
-            max_per_hour: 300,
-            max_per_day: 3000,
-            cooldown: Duration::from_secs(60),
-            burst_size: 5,
-        });
+        limits.insert(
+            "create_session".to_string(),
+            OperationLimit {
+                max_per_second: 3,
+                max_per_minute: 30,
+                max_per_hour: 300,
+                max_per_day: 3000,
+                cooldown: Duration::from_secs(60),
+                burst_size: 5,
+            },
+        );
 
         Self {
             limits: Arc::new(RwLock::new(limits)),
@@ -282,7 +308,7 @@ impl RateLimiter {
 
         // 3. Client state lookup & update
         let mut counters = self.counters.write();
-        
+
         // Hide whether the client was already known or if we reached capacity
         let is_known = counters.contains_key(client_id);
         if !is_known && counters.len() >= Self::MAX_TRACKED_CLIENTS {
@@ -292,32 +318,39 @@ impl RateLimiter {
         }
 
         let counter = counters.entry(client_id.to_string()).or_default();
-        
+
         // Check cooldown status
         if let Some(cooldown_end) = counter.cooldown_until {
             if now < cooldown_end {
                 if error.is_none() {
-                    error = Some(RateLimitError::CooldownActive(cooldown_end.duration_since(now)));
+                    error = Some(RateLimitError::CooldownActive(
+                        cooldown_end.duration_since(now),
+                    ));
                 }
             } else {
                 counter.cooldown_until = None;
             }
         }
-        
+
         // Update buckets (Always do this to maintain consistent timing)
         self.update_counters(counter, limit, now);
         self.refill_burst_tokens(counter, limit, now);
-        
+
         // 4. Evaluate individual limits
         if counter.burst_tokens == 0 && error.is_none() {
             error = Some(RateLimitError::BurstExceeded);
         }
-        
+
         let mut limit_hit = None;
-        if counter.second_count >= limit.max_per_second { limit_hit = Some("per_second"); }
-        else if counter.minute_count >= limit.max_per_minute { limit_hit = Some("per_minute"); }
-        else if counter.hour_count >= limit.max_per_hour { limit_hit = Some("per_hour"); }
-        else if counter.day_count >= limit.max_per_day { limit_hit = Some("per_day"); }
+        if counter.second_count >= limit.max_per_second {
+            limit_hit = Some("per_second");
+        } else if counter.minute_count >= limit.max_per_minute {
+            limit_hit = Some("per_minute");
+        } else if counter.hour_count >= limit.max_per_hour {
+            limit_hit = Some("per_hour");
+        } else if counter.day_count >= limit.max_per_day {
+            limit_hit = Some("per_day");
+        }
 
         if let Some(lt) = limit_hit {
             if error.is_none() {
@@ -342,7 +375,7 @@ impl RateLimiter {
         counter.hour_count += 1;
         counter.day_count += 1;
         counter.burst_tokens -= 1;
-        
+
         Ok(())
     }
 
@@ -371,13 +404,13 @@ impl RateLimiter {
             counter.second_count = 0;
             counter.last_second = now;
         }
-        
+
         // Reset minute counter
         if now.duration_since(counter.last_minute) >= Duration::from_secs(60) {
             counter.minute_count = 0;
             counter.last_minute = now;
         }
-        
+
         // Reset hour counter
         if now.duration_since(counter.last_hour) >= Duration::from_secs(3600) {
             counter.hour_count = 0;
@@ -392,10 +425,15 @@ impl RateLimiter {
     }
 
     /// Refill burst tokens
-    fn refill_burst_tokens(&self, counter: &mut ClientCounter, limit: &OperationLimit, now: Instant) {
+    fn refill_burst_tokens(
+        &self,
+        counter: &mut ClientCounter,
+        limit: &OperationLimit,
+        now: Instant,
+    ) {
         let elapsed = now.duration_since(counter.last_refill);
         let tokens_to_add = (elapsed.as_millis() as u32 * limit.burst_size) / 1000;
-        
+
         if tokens_to_add > 0 {
             counter.burst_tokens = (counter.burst_tokens + tokens_to_add).min(limit.burst_size);
             counter.last_refill = now;
@@ -418,7 +456,7 @@ impl RateLimiter {
     pub fn remaining(&self, operation: &str, client_id: &str) -> Option<RemainingQuota> {
         let limits = self.limits.read();
         let limit = limits.get(operation)?;
-        
+
         let mut counters = self.counters.write();
         // Only create entry for known clients — don't grow the map on quota queries
         if !counters.contains_key(client_id) {
@@ -447,7 +485,10 @@ impl RateLimiter {
         let counters = self.counters.read();
         RateLimiterStats {
             total_clients: counters.len(),
-            in_cooldown: counters.values().filter(|c| c.cooldown_until.is_some()).count(),
+            in_cooldown: counters
+                .values()
+                .filter(|c| c.cooldown_until.is_some())
+                .count(),
         }
     }
 
@@ -469,9 +510,7 @@ impl RateLimiter {
     pub fn prune_inactive(&self, max_age: Duration) {
         let mut counters = self.counters.write();
         let now = Instant::now();
-        counters.retain(|_, c| {
-            now.duration_since(c.last_second) < max_age
-        });
+        counters.retain(|_, c| now.duration_since(c.last_second) < max_age);
     }
 }
 
@@ -497,7 +536,7 @@ mod tests {
     #[test]
     fn test_rate_limiter_basic() {
         let limiter = RateLimiter::new();
-        
+
         // Should allow first request
         assert!(limiter.check("decrypt", "client1").is_ok());
     }
@@ -505,12 +544,12 @@ mod tests {
     #[test]
     fn test_rate_limiter_limit() {
         let limiter = RateLimiter::new();
-        
+
         // Exhaust per-second limit (5 for decrypt)
         for _ in 0..5 {
             assert!(limiter.check("decrypt", "client1").is_ok());
         }
-        
+
         // Should now be limited
         assert!(limiter.check("decrypt", "client1").is_err());
     }
@@ -518,15 +557,15 @@ mod tests {
     #[test]
     fn test_rate_limiter_different_clients() {
         let limiter = RateLimiter::new();
-        
+
         // Exhaust limit for client1
         for _ in 0..5 {
             limiter.check("decrypt", "client1").unwrap();
         }
-        
+
         // client1 should be limited
         assert!(limiter.check("decrypt", "client1").is_err());
-        
+
         // client2 should still be allowed
         assert!(limiter.check("decrypt", "client2").is_ok());
     }
@@ -534,9 +573,9 @@ mod tests {
     #[test]
     fn test_remaining_quota() {
         let limiter = RateLimiter::new();
-        
+
         limiter.check("decrypt", "client1").unwrap();
-        
+
         let remaining = limiter.remaining("decrypt", "client1").unwrap();
         assert_eq!(remaining.per_second, 4);
         assert!(!remaining.in_cooldown);
@@ -545,7 +584,7 @@ mod tests {
     #[test]
     fn test_unknown_operation() {
         let limiter = RateLimiter::new();
-        
+
         let result = limiter.check("unknown_op", "client1");
         assert!(matches!(result, Err(RateLimitError::UnknownOperation(_))));
     }
@@ -553,18 +592,18 @@ mod tests {
     #[test]
     fn test_reset() {
         let limiter = RateLimiter::new();
-        
+
         // Exhaust limit
         for _ in 0..5 {
             limiter.check("decrypt", "client1").unwrap();
         }
-        
+
         // Should be limited
         assert!(limiter.check("decrypt", "client1").is_err());
-        
+
         // Reset
         limiter.reset("client1");
-        
+
         // Should be allowed again
         assert!(limiter.check("decrypt", "client1").is_ok());
     }
@@ -573,7 +612,7 @@ mod tests {
     fn test_global_rate_limit() {
         let mut limiter = RateLimiter::new();
         limiter.set_global_rps(20);
-        
+
         // Should allow requests under limit
         for _ in 0..10 {
             assert!(limiter.check("encrypt", "client1").is_ok());
@@ -583,10 +622,10 @@ mod tests {
     #[test]
     fn test_stats() {
         let limiter = RateLimiter::new();
-        
+
         limiter.check("decrypt", "client1").unwrap();
         limiter.check("decrypt", "client2").unwrap();
-        
+
         let stats = limiter.stats();
         assert_eq!(stats.total_clients, 2);
     }

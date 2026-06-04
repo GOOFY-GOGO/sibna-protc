@@ -2,8 +2,8 @@
 //! Secure Random Number Generation
 
 use super::{CryptoError, CryptoResult};
-use rand_core::{CryptoRng, RngCore};
 use rand::rngs::OsRng;
+use rand_core::{CryptoRng, RngCore};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 // : HKDF-based entropy combining
 use hkdf::Hkdf;
@@ -26,14 +26,17 @@ impl SecureRandom {
 
         rng.fill_bytes(&mut entropy_pool);
 
-        // Mix in environmental noise 
+        // Mix in environmental noise
         let pid = std::process::id().to_le_bytes();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression in SecureRandom: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression in SecureRandom: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_nanos()
             .to_le_bytes();
-        
+
         for (i, &b) in pid.iter().chain(now.iter()).enumerate() {
             entropy_pool[i % ENTROPY_POOL_SIZE] ^= b;
         }
@@ -42,7 +45,7 @@ impl SecureRandom {
             return Err(CryptoError::RandomFailed);
         }
 
-        // MEMORY PINNING : Pin the entropy pool to RAM to prevent 
+        // MEMORY PINNING : Pin the entropy pool to RAM to prevent
         // it being swapped to disk where it could be recovered by an attacker.
         #[cfg(windows)]
         unsafe {
@@ -63,9 +66,7 @@ impl SecureRandom {
     }
 
     pub fn fill_bytes(&mut self, buf: &mut [u8]) {
-        if self.bytes_generated.saturating_add(buf.len() as u64)
-            > self.max_bytes_before_reseed
-        {
+        if self.bytes_generated.saturating_add(buf.len() as u64) > self.max_bytes_before_reseed {
             self.reseed();
         }
 
@@ -113,8 +114,7 @@ impl SecureRandom {
 
         self.update_entropy_pool(buf);
 
-        self.bytes_generated =
-            self.bytes_generated.saturating_add(buf.len() as u64);
+        self.bytes_generated = self.bytes_generated.saturating_add(buf.len() as u64);
     }
 
     pub fn next_u64(&mut self) -> u64 {
@@ -158,8 +158,7 @@ impl SecureRandom {
     fn update_entropy_pool(&mut self, generated: &[u8]) {
         for (i, &byte) in generated.iter().enumerate() {
             let idx = i % ENTROPY_POOL_SIZE;
-            self.entropy_pool[idx] =
-                self.entropy_pool[idx].wrapping_add(byte).rotate_left(3);
+            self.entropy_pool[idx] = self.entropy_pool[idx].wrapping_add(byte).rotate_left(3);
         }
     }
 
@@ -209,10 +208,7 @@ impl RngCore for SecureRandom {
         SecureRandom::fill_bytes(self, dest)
     }
 
-    fn try_fill_bytes(
-        &mut self,
-        dest: &mut [u8],
-    ) -> Result<(), rand_core::Error> {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
         self.fill_bytes(dest);
         Ok(())
     }
@@ -236,10 +232,7 @@ where
             *borrow = Some(SecureRandom::new()?);
         }
 
-        borrow
-            .as_mut()
-            .ok_or(CryptoError::RandomFailed)
-            .map(f)
+        borrow.as_mut().ok_or(CryptoError::RandomFailed).map(f)
     })
 }
 
@@ -258,8 +251,7 @@ pub fn random_vec(len: usize) -> Vec<u8> {
 }
 
 pub fn random_u64() -> u64 {
-    with_thread_rng(|rng| rng.next_u64())
-        .expect("ENTROPY_CRITICAL: RNG initialization failed")
+    with_thread_rng(|rng| rng.next_u64()).expect("ENTROPY_CRITICAL: RNG initialization failed")
 }
 
 pub fn shuffle<T>(slice: &mut [T]) {
@@ -277,15 +269,11 @@ pub fn shuffle<T>(slice: &mut [T]) {
 }
 
 pub fn random_alphanumeric(len: usize) -> String {
-    const CHARSET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
     with_thread_rng(|rng| {
         (0..len)
-            .map(|_| {
-                CHARSET[rng.gen_range(CHARSET.len() as u64) as usize]
-                    as char
-            })
+            .map(|_| CHARSET[rng.gen_range(CHARSET.len() as u64) as usize] as char)
             .collect()
     })
     .expect("ENTROPY_CRITICAL: RNG initialization failed")
@@ -303,8 +291,7 @@ pub fn check_entropy() -> CryptoResult<()> {
         return Err(CryptoError::InsufficientEntropy);
     }
 
-    let unique: std::collections::HashSet<u8> =
-        buf.iter().copied().collect();
+    let unique: std::collections::HashSet<u8> = buf.iter().copied().collect();
 
     if unique.len() < 8 {
         return Err(CryptoError::InsufficientEntropy);

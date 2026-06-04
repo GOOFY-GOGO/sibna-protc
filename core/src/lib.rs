@@ -60,21 +60,21 @@
 
 // Core modules
 pub mod crypto;
-pub mod ratchet;
-pub mod handshake;
-pub mod keystore;
 pub mod error;
 pub mod group;
-pub mod safety;
-pub mod rate_limit;
-pub mod validation;
-pub mod media;
+pub mod handshake;
 pub mod iot;
-pub mod metadata;
+pub mod keystore;
 pub mod manager;
+pub mod media;
+pub mod metadata;
+pub mod ratchet;
+pub mod rate_limit;
+pub mod safety;
+pub mod storage;
 #[cfg(feature = "p2p")]
 pub mod transport;
-pub mod storage;
+pub mod validation;
 
 // P2P transport (optional, requires feature = "p2p")
 #[cfg(feature = "p2p")]
@@ -90,25 +90,25 @@ pub mod wasm;
 
 // Re-exports
 pub use crypto::*;
-pub use ratchet::*;
+pub use error::{ProtocolError, ProtocolResult};
+pub use group::{GroupManager, GroupMessage, GroupSession, SenderKey};
 pub use handshake::*;
 pub use keystore::*;
-pub use error::{ProtocolError, ProtocolResult};
-pub use group::{GroupSession, SenderKey, GroupMessage, GroupManager};
+pub use ratchet::*;
+pub use rate_limit::{OperationLimit, RateLimitError, RateLimiter, RemainingQuota};
 pub use safety::{SafetyNumber, VerificationQrCode};
-pub use rate_limit::{RateLimiter, RateLimitError, OperationLimit, RemainingQuota};
-pub use validation::{validate_message, validate_key, validate_session_id, ValidationError};
+pub use validation::{validate_key, validate_message, validate_session_id, ValidationError};
 
 // P2P re-exports
-#[cfg(feature = "p2p")]
-pub use p2p::{P2pNode, P2pConfig, P2pError, P2pResult};
 pub use manager::HybridRouter;
+#[cfg(feature = "p2p")]
+pub use p2p::{P2pConfig, P2pError, P2pNode, P2pResult};
 
-use std::sync::Arc;
 use parking_lot::RwLock;
-use zeroize::{Zeroize, ZeroizeOnDrop};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use x25519_dalek::PublicKey;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Protocol version
 /// Protocol version — always in sync with Cargo.toml
@@ -210,7 +210,7 @@ impl Default for Config {
             db_path: None,
             enable_rate_limiting: true,
             max_message_size: 10 * 1024 * 1024, // 10 MB
-            session_timeout_secs: 3600, // 1 hour
+            session_timeout_secs: 3600,         // 1 hour
             auto_prune_keys: true,
             max_key_age_secs: 30 * 86400, // 30 days
             message_padding: PaddingMode::Standard,
@@ -227,8 +227,8 @@ impl Config {
     /// This disables Tor, P2P discovery, and Cover Traffic, whilst enabling strict Safety Number validation.
     pub fn core_mode() -> Self {
         Self {
-            require_safety_numbers: true, // Defeat TOFU unconditionally
-            proxy_url: None,              // Disable Tor surface area
+            require_safety_numbers: true,   // Defeat TOFU unconditionally
+            proxy_url: None,                // Disable Tor surface area
             enable_header_encryption: true, // Enable for maximum privacy
             ..Default::default()
         }
@@ -261,8 +261,7 @@ impl SecureContext {
     pub fn new(config: Config, master_password: Option<&[u8]>) -> ProtocolResult<Self> {
         // Validate password if provided - use unified validation rules
         if let Some(password) = master_password {
-            validation::validate_password(password)
-                .map_err(|_| ProtocolError::WeakPassword)?;
+            validation::validate_password(password).map_err(|_| ProtocolError::WeakPassword)?;
         }
 
         // Derive storage key from master password using Argon2id (memory-hard KDF).
@@ -291,12 +290,15 @@ impl SecureContext {
                     argon2::Params::DEFAULT_M_COST,
                     argon2::Params::DEFAULT_T_COST,
                     argon2::Params::DEFAULT_P_COST,
-                    Some(32)
-                ).map_err(|_| ProtocolError::KeyDerivationFailed)?;
-                let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+                    Some(32),
+                )
+                .map_err(|_| ProtocolError::KeyDerivationFailed)?;
+                let argon2 =
+                    Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
                 let mut key_bytes = [0u8; 32];
-                argon2.hash_password_into(password, &salt_arr, &mut key_bytes)
+                argon2
+                    .hash_password_into(password, &salt_arr, &mut key_bytes)
                     .map_err(|_| ProtocolError::KeyDerivationFailed)?;
 
                 (Zeroizing::new(key_bytes), salt_arr)
@@ -424,7 +426,8 @@ impl SecureContext {
         // Check rate limit
         if self.config.enable_rate_limiting {
             let limiter = self.rate_limiter.write();
-            limiter.check("create_session", &hex::encode(peer_id))
+            limiter
+                .check("create_session", &hex::encode(peer_id))
                 .map_err(|_| ProtocolError::RateLimitExceeded)?;
         }
 
@@ -451,8 +454,15 @@ impl SecureContext {
     }
 
     /// Set device link credentials for multi-device sync
-    pub fn set_device_link(&self, device_id: u32, root_key: &[u8; 32], signature: &[u8; 64]) -> ProtocolResult<()> {
-        self.keystore.write().set_device_link(device_id, *root_key, *signature);
+    pub fn set_device_link(
+        &self,
+        device_id: u32,
+        root_key: &[u8; 32],
+        signature: &[u8; 64],
+    ) -> ProtocolResult<()> {
+        self.keystore
+            .write()
+            .set_device_link(device_id, *root_key, *signature);
         Ok(())
     }
 
@@ -505,7 +515,8 @@ impl SecureContext {
         // Check rate limit
         if self.config.enable_rate_limiting {
             let limiter = self.rate_limiter.write();
-            limiter.check("handshake", &hex::encode(peer_id))
+            limiter
+                .check("handshake", &hex::encode(peer_id))
                 .map_err(|_| ProtocolError::RateLimitExceeded)?;
         }
 
@@ -543,10 +554,13 @@ impl SecureContext {
                 signed_payload.extend_from_slice(b"SibnaSignedPreKey_v3");
                 signed_payload.extend_from_slice(peer_spk);
 
-                use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+                use ed25519_dalek::{Signature, Verifier, VerifyingKey};
                 let vk = VerifyingKey::from_bytes(
-                    peer_ik.try_into().map_err(|_| ProtocolError::InvalidKeyLength)?
-                ).map_err(|_| ProtocolError::InvalidKey)?;
+                    peer_ik
+                        .try_into()
+                        .map_err(|_| ProtocolError::InvalidKeyLength)?,
+                )
+                .map_err(|_| ProtocolError::InvalidKey)?;
 
                 // Use dedicated peer_spk_signature parameter instead of
                 // piggybacking on prologue (which was an API misuse).
@@ -596,7 +610,9 @@ impl SecureContext {
         // If the key has changed since last contact, abort immediately.
         if let Some(pk_bytes) = peer_identity_key {
             if pk_bytes.len() == 32 {
-                let pk_arr: [u8; 32] = pk_bytes.try_into().map_err(|_| ProtocolError::InvalidKeyLength)?;
+                let pk_arr: [u8; 32] = pk_bytes
+                    .try_into()
+                    .map_err(|_| ProtocolError::InvalidKeyLength)?;
                 drop(keystore); // release read lock before acquiring write
                 let mut keystore_w = self.keystore.write();
                 keystore_w.verify_or_pin_peer_key(peer_id, &pk_arr)?;
@@ -628,7 +644,7 @@ impl SecureContext {
             // Initiator seeds the ratchet with peer's SPK as first remote DH key.
             let spk = peer_signed_prekey.ok_or(ProtocolError::InvalidState)?;
             let remote_dh = PublicKey::from(
-                <[u8; 32]>::try_from(spk).map_err(|_| ProtocolError::InvalidKeyLength)?
+                <[u8; 32]>::try_from(spk).map_err(|_| ProtocolError::InvalidKeyLength)?,
             );
             (remote_dh, output.local_ephemeral_key)
         } else {
@@ -636,8 +652,7 @@ impl SecureContext {
             // The caller passes this in peer_onetime_prekey for the responder path.
             let initiator_eph = peer_onetime_prekey.ok_or(ProtocolError::InvalidState)?;
             let remote_dh = PublicKey::from(
-                <[u8; 32]>::try_from(initiator_eph)
-                    .map_err(|_| ProtocolError::InvalidKeyLength)?
+                <[u8; 32]>::try_from(initiator_eph).map_err(|_| ProtocolError::InvalidKeyLength)?,
             );
             (remote_dh, output.local_ephemeral_key)
         };
@@ -678,7 +693,8 @@ impl SecureContext {
         // Check rate limit
         if self.config.enable_rate_limiting {
             let limiter = self.rate_limiter.write();
-            limiter.check("encrypt", &hex::encode(session_id))
+            limiter
+                .check("encrypt", &hex::encode(session_id))
                 .map_err(|_| ProtocolError::RateLimitExceeded)?;
         }
 
@@ -723,7 +739,8 @@ impl SecureContext {
         // Check rate limit
         if self.config.enable_rate_limiting {
             let limiter = self.rate_limiter.write();
-            limiter.check("decrypt", &hex::encode(session_id))
+            limiter
+                .check("decrypt", &hex::encode(session_id))
                 .map_err(|_| ProtocolError::RateLimitExceeded)?;
         }
 
@@ -748,10 +765,11 @@ impl SecureContext {
     pub fn get_safety_number(&self, peer_id: &[u8]) -> ProtocolResult<SafetyNumber> {
         let keystore = self.keystore.read();
         let our_id = keystore.get_identity_keypair()?.ed25519_public;
-        
-        let pin = keystore.get_peer_pin(peer_id)
+
+        let pin = keystore
+            .get_peer_pin(peer_id)
             .ok_or(ProtocolError::KeyNotFound)?;
-            
+
         Ok(SafetyNumber::calculate(&our_id, &pin.identity_key))
     }
 
@@ -792,7 +810,8 @@ impl SecureContext {
         }
 
         let mut groups = self.groups.write();
-        let group = groups.get_group_mut(group_id)
+        let group = groups
+            .get_group_mut(group_id)
             .ok_or_else(|| ProtocolError::InvalidState)?;
         group.encrypt(plaintext)
     }
@@ -808,32 +827,43 @@ impl SecureContext {
         }
 
         let mut groups = self.groups.write();
-        let group = groups.get_group_mut(&message.group_id)
+        let group = groups
+            .get_group_mut(&message.group_id)
             .ok_or_else(|| ProtocolError::InvalidState)?;
         group.decrypt(message, sender_public_key)
     }
 
     /// Add member to group
-    pub fn add_group_member(&self, group_id: &[u8; 32], public_key: [u8; 32]) -> ProtocolResult<()> {
+    pub fn add_group_member(
+        &self,
+        group_id: &[u8; 32],
+        public_key: [u8; 32],
+    ) -> ProtocolResult<()> {
         if !self.config.enable_group_messaging {
             return Err(ProtocolError::InvalidState);
         }
 
         let mut groups = self.groups.write();
-        let group = groups.get_group_mut(group_id)
+        let group = groups
+            .get_group_mut(group_id)
             .ok_or_else(|| ProtocolError::InvalidState)?;
         group.add_member(public_key)?;
         Ok(())
     }
 
     /// Remove member from group
-    pub fn remove_group_member(&self, group_id: &[u8; 32], public_key: &[u8; 32]) -> ProtocolResult<()> {
+    pub fn remove_group_member(
+        &self,
+        group_id: &[u8; 32],
+        public_key: &[u8; 32],
+    ) -> ProtocolResult<()> {
         if !self.config.enable_group_messaging {
             return Err(ProtocolError::InvalidState);
         }
 
         let mut groups = self.groups.write();
-        let group = groups.get_group_mut(group_id)
+        let group = groups
+            .get_group_mut(group_id)
             .ok_or_else(|| ProtocolError::InvalidState)?;
         group.remove_member(public_key)?;
         Ok(())
@@ -846,7 +876,12 @@ impl SecureContext {
 
     /// List all groups
     pub fn list_groups(&self) -> Vec<[u8; 32]> {
-        self.groups.read().list_groups().into_iter().cloned().collect()
+        self.groups
+            .read()
+            .list_groups()
+            .into_iter()
+            .cloned()
+            .collect()
     }
 
     /// Delete a session
@@ -904,17 +939,14 @@ impl SecureContext {
         }
 
         let tmp_path = format!("{}.tmp", salt_path);
-        let mut f = std::fs::File::create(&tmp_path)
-            .map_err(|_| ProtocolError::StorageError)?;
+        let mut f = std::fs::File::create(&tmp_path).map_err(|_| ProtocolError::StorageError)?;
         f.write_all(b"SIBNA_SALT_V1")
             .map_err(|_| ProtocolError::StorageError)?;
         f.write_all(&*salt)
             .map_err(|_| ProtocolError::StorageError)?;
-        f.sync_all()
-            .map_err(|_| ProtocolError::StorageError)?;
+        f.sync_all().map_err(|_| ProtocolError::StorageError)?;
         drop(f);
-        std::fs::rename(&tmp_path, &salt_path)
-            .map_err(|_| ProtocolError::StorageError)?;
+        std::fs::rename(&tmp_path, &salt_path).map_err(|_| ProtocolError::StorageError)?;
 
         tracing::info!("storage salt persisted to {}", salt_path);
         Ok(())
@@ -943,7 +975,9 @@ impl SecureContext {
         let groups = self.groups.read();
         let storage_key = self.storage_key.read();
         let salt = self.storage_salt.read();
-        let seq = self.sequence_number.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let seq = self
+            .sequence_number
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         crate::storage::SecureStorage::save_context(
             path,
@@ -965,10 +999,12 @@ impl SecureContext {
         use std::io::Read;
         let mut file = std::fs::File::open(path).map_err(|_| ProtocolError::StorageError)?;
         let mut magic = [0u8; 8];
-        file.read_exact(&mut magic).map_err(|_| ProtocolError::StorageError)?;
+        file.read_exact(&mut magic)
+            .map_err(|_| ProtocolError::StorageError)?;
         let mut salt = [0u8; 32];
-        file.read_exact(&mut salt).map_err(|_| ProtocolError::StorageError)?;
-        
+        file.read_exact(&mut salt)
+            .map_err(|_| ProtocolError::StorageError)?;
+
         let storage_key = {
             #[cfg(feature = "argon2")]
             {
@@ -979,9 +1015,12 @@ impl SecureContext {
                     argon2::Params::DEFAULT_T_COST,
                     argon2::Params::DEFAULT_P_COST,
                     Some(32),
-                ).map_err(|_| ProtocolError::KeyDerivationFailed)?;
-                let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-                argon2.hash_password_into(password, &salt, &mut key_bytes)
+                )
+                .map_err(|_| ProtocolError::KeyDerivationFailed)?;
+                let argon2 =
+                    Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+                argon2
+                    .hash_password_into(password, &salt, &mut key_bytes)
                     .map_err(|_| ProtocolError::KeyDerivationFailed)?;
                 zeroize::Zeroizing::new(key_bytes)
             }
@@ -994,7 +1033,7 @@ impl SecureContext {
         };
 
         let (payload, _) = crate::storage::SecureStorage::load_context(path, &*storage_key)?;
-        
+
         let config = payload.sessions._config.clone();
         // Restore the device ID that was saved with the context. Loading
         // a context with an all-zero device ID would break multi-device
@@ -1017,7 +1056,6 @@ impl SecureContext {
         })
     }
 }
-
 
 impl Zeroize for SecureContext {
     fn zeroize(&mut self) {
@@ -1086,14 +1124,22 @@ impl SessionManager {
     }
 
     /// Get an existing session by ID
-    pub fn get_session(&self, session_id: &[u8]) -> ProtocolResult<Arc<RwLock<DoubleRatchetSession>>> {
-        self.sessions.get(session_id)
+    pub fn get_session(
+        &self,
+        session_id: &[u8],
+    ) -> ProtocolResult<Arc<RwLock<DoubleRatchetSession>>> {
+        self.sessions
+            .get(session_id)
             .map(|s| s.value().clone())
             .ok_or(ProtocolError::SessionNotFound)
     }
 
     /// Insert a session into the cache
-    pub fn insert_session(&self, peer_id: &[u8], session: Arc<RwLock<DoubleRatchetSession>>) -> ProtocolResult<()> {
+    pub fn insert_session(
+        &self,
+        peer_id: &[u8],
+        session: Arc<RwLock<DoubleRatchetSession>>,
+    ) -> ProtocolResult<()> {
         self.sessions.insert(peer_id.to_vec(), session);
         Ok(())
     }
@@ -1118,7 +1164,7 @@ impl SessionManager {
         !self.sessions.is_empty() || self.sessions.len() == 0
     }
 
-    /// Iterate over sessions 
+    /// Iterate over sessions
     pub fn iter(&self) -> dashmap::iter::Iter<'_, Vec<u8>, Arc<RwLock<DoubleRatchetSession>>> {
         self.sessions.iter()
     }
@@ -1126,7 +1172,7 @@ impl SessionManager {
 
 mod sessions_map_serde {
     use super::*;
-    use serde::{Serializer, Deserializer, Deserialize};
+    use serde::{Deserialize, Deserializer, Serializer};
     use std::collections::HashMap;
 
     pub fn serialize<S>(
@@ -1225,7 +1271,7 @@ mod tests {
     fn test_context_stats() {
         let config = Config::default();
         let ctx = SecureContext::new(config, Some(b"Abcdef123")).unwrap();
-        
+
         let stats = ctx.stats();
         assert_eq!(stats.session_count, 0);
         assert_eq!(stats.group_count, 0);
@@ -1236,7 +1282,7 @@ mod tests {
     fn test_version() {
         let config = Config::default();
         let ctx = SecureContext::new(config, Some(b"Abcdef123")).unwrap();
-        
+
         assert_eq!(ctx.version(), VERSION);
     }
 }

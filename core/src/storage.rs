@@ -4,11 +4,10 @@
 //! Includes Salt persistence and Rollback protection.
 
 use crate::error::{ProtocolError, ProtocolResult};
+use crate::group::GroupManager;
 use crate::keystore::KeyStore;
 use crate::SessionManager;
-use crate::group::GroupManager;
-use serde::{Serialize, Deserialize};
-
+use serde::{Deserialize, Serialize};
 
 /// Unified storage payload
 #[derive(Serialize, Deserialize)]
@@ -50,7 +49,7 @@ pub struct SecureStorage;
 impl SecureStorage {
     /// Format identifier for file header
     const MAGIC: &'static [u8; 8] = b"SIBNA001";
-    
+
     /// Current storage format version
     const CURRENT_VERSION: u32 = 1;
 
@@ -69,12 +68,15 @@ impl SecureStorage {
         device_id: [u8; 16],
     ) -> ProtocolResult<()> {
         let _lock_file = Self::_acquire_lock(path)?;
-        use std::io::Write;
         use crate::crypto::CryptoHandler;
+        use std::io::Write;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|e| { tracing::error!("clock regression in storage: {:?}", e); std::time::Duration::from_secs(u64::MAX / 2) })
+            .unwrap_or_else(|e| {
+                tracing::error!("clock regression in storage: {:?}", e);
+                std::time::Duration::from_secs(u64::MAX / 2)
+            })
             .as_secs();
 
         let payload = StoragePayload {
@@ -92,32 +94,31 @@ impl SecureStorage {
             .map_err(|_| ProtocolError::SerializationError)?;
 
         // Encrypt payload
-        let handler = CryptoHandler::new(encryption_key)
-            .map_err(|_| ProtocolError::InternalError)?;
-        
+        let handler =
+            CryptoHandler::new(encryption_key).map_err(|_| ProtocolError::InternalError)?;
+
         // Use a fixed salt for the encryption key derivation IF NOT PROVIDED.
         // Actually, the Argon2 salt should be passed in or stored in the header.
         // For simplicity, we assume encryption_key is already derived.
-        let encrypted = handler.encrypt(&plaintext, b"SibnaUnifiedStore_v1")
+        let encrypted = handler
+            .encrypt(&plaintext, b"SibnaUnifiedStore_v1")
             .map_err(|_| ProtocolError::StorageError)?;
 
         // Atomic write
         let tmp_path = path.with_extension("tmp");
-        let mut file = std::fs::File::create(&tmp_path)
-            .map_err(|_| ProtocolError::StorageError)?;
-        
+        let mut file = std::fs::File::create(&tmp_path).map_err(|_| ProtocolError::StorageError)?;
+
         file.write_all(Self::MAGIC)
             .map_err(|_| ProtocolError::StorageError)?;
         file.write_all(salt)
             .map_err(|_| ProtocolError::StorageError)?;
         file.write_all(encrypted.as_slice())
             .map_err(|_| ProtocolError::StorageError)?;
-        
-        file.sync_all()
-            .map_err(|_| ProtocolError::StorageError)?;
+
+        file.sync_all().map_err(|_| ProtocolError::StorageError)?;
         drop(file);
 
-        // 4. Save Manifest with HMAC authentication 
+        // 4. Save Manifest with HMAC authentication
         let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
         sha2::Digest::update(&mut hasher, &encrypted);
         let blob_hash: [u8; 32] = sha2::Digest::finalize(hasher).into();
@@ -130,8 +131,8 @@ impl SecureStorage {
         mac_input.extend_from_slice(&payload.version.to_le_bytes());
         mac_input.extend_from_slice(&payload.sequence_number.to_le_bytes());
         mac_input.extend_from_slice(&blob_hash);
-        let mut hmac = <Hmac<Sha256>>::new_from_slice(encryption_key)
-            .expect("HMAC accepts any key length");
+        let mut hmac =
+            <Hmac<Sha256>>::new_from_slice(encryption_key).expect("HMAC accepts any key length");
         hmac.update(&mac_input);
         let manifest_mac: [u8; 32] = hmac.finalize().into_bytes().into();
 
@@ -143,13 +144,11 @@ impl SecureStorage {
         };
         let manifest_bytes = bincode::serde::encode_to_vec(&manifest, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)?;
-        
-        let manifest_path = path.with_extension("manifest");
-        std::fs::write(&manifest_path, manifest_bytes)
-            .map_err(|_| ProtocolError::StorageError)?;
 
-        std::fs::rename(&tmp_path, path)
-            .map_err(|_| ProtocolError::StorageError)?;
+        let manifest_path = path.with_extension("manifest");
+        std::fs::write(&manifest_path, manifest_bytes).map_err(|_| ProtocolError::StorageError)?;
+
+        std::fs::rename(&tmp_path, path).map_err(|_| ProtocolError::StorageError)?;
 
         // Lock released on return by `LockGuard::drop`.
         Ok(())
@@ -161,8 +160,8 @@ impl SecureStorage {
         encryption_key: &[u8; 32],
     ) -> ProtocolResult<(StoragePayload, [u8; 32])> {
         let _lock_file = Self::_acquire_lock(path)?;
-        use std::io::Read;
         use crate::crypto::CryptoHandler;
+        use std::io::Read;
 
         // 1. Read Manifest if it exists.
         // SECURITY: A missing manifest is treated as an attack indicator.
@@ -171,10 +170,9 @@ impl SecureStorage {
         // rollback protection depends on the manifest being present.
         let manifest_path = path.with_extension("manifest");
         let manifest: StorageManifest = if manifest_path.exists() {
-            let bytes = std::fs::read(&manifest_path)
-                .map_err(|_| ProtocolError::StorageError)?;
+            let bytes = std::fs::read(&manifest_path).map_err(|_| ProtocolError::StorageError)?;
             bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
-                .map(|(v,_)|v)
+                .map(|(v, _)| v)
                 .map_err(|_| ProtocolError::DeserializationError)?
         } else {
             // Manifest missing: refuse to load. Callers who genuinely want to
@@ -192,13 +190,12 @@ impl SecureStorage {
         };
 
         // 2. Read Blob
-        let mut file = std::fs::File::open(path)
-            .map_err(|_| ProtocolError::StorageError)?;
-        
+        let mut file = std::fs::File::open(path).map_err(|_| ProtocolError::StorageError)?;
+
         let mut magic = [0u8; 8];
         file.read_exact(&mut magic)
             .map_err(|_| ProtocolError::StorageError)?;
-        
+
         if &magic != Self::MAGIC {
             return Err(ProtocolError::StorageError);
         }
@@ -211,9 +208,9 @@ impl SecureStorage {
         file.read_to_end(&mut encrypted)
             .map_err(|_| ProtocolError::StorageError)?;
 
-        let handler = CryptoHandler::new(encryption_key)
-            .map_err(|_| ProtocolError::InternalError)?;
-        
+        let handler =
+            CryptoHandler::new(encryption_key).map_err(|_| ProtocolError::InternalError)?;
+
         // 3. Verify Manifest HMAC and Hash
         // First: verify the manifest's own HMAC to prevent manifest replacement
         use hmac::{Hmac, Mac};
@@ -223,8 +220,8 @@ impl SecureStorage {
         mac_input.extend_from_slice(&manifest.version.to_le_bytes());
         mac_input.extend_from_slice(&manifest.sequence_number.to_le_bytes());
         mac_input.extend_from_slice(&manifest.blob_hash);
-        let mut hmac = <Hmac<Sha256>>::new_from_slice(encryption_key)
-            .expect("HMAC accepts any key length");
+        let mut hmac =
+            <Hmac<Sha256>>::new_from_slice(encryption_key).expect("HMAC accepts any key length");
         hmac.update(&mac_input);
         let expected_mac: [u8; 32] = hmac.finalize().into_bytes().into();
 
@@ -245,11 +242,14 @@ impl SecureStorage {
             return Err(ProtocolError::StorageError); // Blob tampered
         }
 
-        let plaintext = handler.decrypt(&encrypted, b"SibnaUnifiedStore_v1")
+        let plaintext = handler
+            .decrypt(&encrypted, b"SibnaUnifiedStore_v1")
             .map_err(|_| ProtocolError::StorageError)?;
 
-        let payload: StoragePayload = bincode::serde::decode_from_slice(&plaintext, bincode::config::legacy()).map(|(v,_)|v)
-            .map_err(|_| ProtocolError::DeserializationError)?;
+        let payload: StoragePayload =
+            bincode::serde::decode_from_slice(&plaintext, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .map_err(|_| ProtocolError::DeserializationError)?;
 
         // 4. Verify Sequence Number (Rollback Protection) - v3.0.0
         if payload.sequence_number < manifest.sequence_number {
@@ -259,7 +259,10 @@ impl SecureStorage {
         // Safety Jump for all sessions
         // no nonce reuse even after a crash
         for session_item in payload.sessions.iter() {
-            session_item.value().read().jump_to_reservation()
+            session_item
+                .value()
+                .read()
+                .jump_to_reservation()
                 .map_err(|_| ProtocolError::InternalError)?;
         }
 
@@ -281,7 +284,12 @@ impl SecureStorage {
                 .create_new(true)
                 .open(&lock_path)
             {
-                Ok(f) => return Ok(LockGuard { path: lock_path, _file: f }),
+                Ok(f) => {
+                    return Ok(LockGuard {
+                        path: lock_path,
+                        _file: f,
+                    })
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }

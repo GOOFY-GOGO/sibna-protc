@@ -33,26 +33,26 @@
 //! ```
 
 #[cfg(feature = "p2p")]
-pub mod transport;
+pub mod discovery;
 #[cfg(feature = "p2p")]
 pub mod handshake;
 #[cfg(feature = "p2p")]
-pub mod peer;
+pub mod nat;
 #[cfg(feature = "p2p")]
 pub mod node;
 #[cfg(feature = "p2p")]
-pub mod discovery;
+pub mod peer;
 #[cfg(feature = "p2p")]
-pub mod nat;
+pub mod transport;
 
+#[cfg(feature = "p2p")]
+pub use discovery::{DiscoveredPeer, MdnsDiscovery};
+#[cfg(feature = "p2p")]
+pub use handshake::P2pHandshakeConfig;
 #[cfg(feature = "p2p")]
 pub use node::P2pNode;
 #[cfg(feature = "p2p")]
 pub use peer::Peer;
-#[cfg(feature = "p2p")]
-pub use discovery::{MdnsDiscovery, DiscoveredPeer};
-#[cfg(feature = "p2p")]
-pub use handshake::P2pHandshakeConfig;
 
 use std::net::SocketAddr;
 
@@ -88,7 +88,9 @@ pub struct P2pConfig {
 impl Default for P2pConfig {
     fn default() -> Self {
         Self {
-            bind_addr: "0.0.0.0:0".parse().expect("static literal addr is always valid"),
+            bind_addr: "0.0.0.0:0"
+                .parse()
+                .expect("static literal addr is always valid"),
             handshake_timeout_secs: 30,
             max_peers: 256,
             max_message_size: 10 * 1024 * 1024,
@@ -124,14 +126,14 @@ pub enum P2pError {
 impl std::fmt::Display for P2pError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(e)              => write!(f, "I/O error: {}", e),
-            Self::Framing(s)         => write!(f, "Framing error: {}", s),
-            Self::Handshake(s)       => write!(f, "Handshake failed: {}", s),
-            Self::Crypto(s)          => write!(f, "Crypto error: {}", s),
-            Self::TooManyPeers       => write!(f, "Max peer limit reached"),
-            Self::Timeout            => write!(f, "Operation timed out"),
-            Self::InvalidMessage(s)  => write!(f, "Invalid message: {}", s),
-            Self::Disconnected       => write!(f, "Peer disconnected"),
+            Self::Io(e) => write!(f, "I/O error: {}", e),
+            Self::Framing(s) => write!(f, "Framing error: {}", s),
+            Self::Handshake(s) => write!(f, "Handshake failed: {}", s),
+            Self::Crypto(s) => write!(f, "Crypto error: {}", s),
+            Self::TooManyPeers => write!(f, "Max peer limit reached"),
+            Self::Timeout => write!(f, "Operation timed out"),
+            Self::InvalidMessage(s) => write!(f, "Invalid message: {}", s),
+            Self::Disconnected => write!(f, "Peer disconnected"),
         }
     }
 }
@@ -169,7 +171,10 @@ mod tests {
     fn test_p2p_error_display() {
         let e = P2pError::Timeout;
         assert!(!e.to_string().is_empty());
-        let io_err = P2pError::Io(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused"));
+        let io_err = P2pError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused",
+        ));
         assert!(io_err.to_string().contains("I/O error"));
     }
 }

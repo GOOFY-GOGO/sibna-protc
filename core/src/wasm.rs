@@ -17,9 +17,9 @@
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_impl {
-    use wasm_bindgen::prelude::*;
     use js_sys::Uint8Array;
     use std::cell::RefCell;
+    use wasm_bindgen::prelude::*;
 
     // Store the context in a thread-local (WASM is single-threaded)
     thread_local! {
@@ -48,10 +48,12 @@ mod wasm_impl {
     pub fn wasm_generate_identity() -> Result<Uint8Array, JsValue> {
         CONTEXT.with(|c| {
             let borrow = c.borrow();
-            let ctx = borrow.as_ref()
-                .ok_or_else(|| JsValue::from_str("Context not initialized — call wasm_context_create() first"))?;
+            let ctx = borrow.as_ref().ok_or_else(|| {
+                JsValue::from_str("Context not initialized — call wasm_context_create() first")
+            })?;
 
-            let keypair = ctx.generate_identity()
+            let keypair = ctx
+                .generate_identity()
                 .map_err(|e| JsValue::from_str(&format!("Identity generation failed: {}", e)))?;
 
             let mut result = [0u8; 64];
@@ -70,12 +72,14 @@ mod wasm_impl {
     pub fn wasm_generate_prekey_bundle() -> Result<Uint8Array, JsValue> {
         CONTEXT.with(|c| {
             let borrow = c.borrow();
-            let ctx = borrow.as_ref()
+            let ctx = borrow
+                .as_ref()
                 .ok_or_else(|| JsValue::from_str("Context not initialized"))?;
 
             let keystore = ctx.keystore.read();
-            let bytes = keystore.generate_prekey_bundle_bytes()
-                .map_err(|e| JsValue::from_str(&format!("Failed to generate signed prekey bundle: {}", e)))?;
+            let bytes = keystore.generate_prekey_bundle_bytes().map_err(|e| {
+                JsValue::from_str(&format!("Failed to generate signed prekey bundle: {}", e))
+            })?;
             drop(keystore);
 
             Ok(Uint8Array::from(&bytes[..]))
@@ -95,19 +99,21 @@ mod wasm_impl {
     ) -> Result<(), JsValue> {
         CONTEXT.with(|c| {
             let borrow = c.borrow();
-            let ctx = borrow.as_ref()
+            let ctx = borrow
+                .as_ref()
                 .ok_or_else(|| JsValue::from_str("Context not initialized"))?;
 
             let bundle = crate::handshake::PreKeyBundle::from_bytes(bundle_bytes)
                 .map_err(|e| JsValue::from_str(&format!("Failed to parse prekey bundle: {}", e)))?;
 
-            bundle.validate()
+            bundle
+                .validate()
                 .map_err(|e| JsValue::from_str(&format!("Invalid prekey bundle: {}", e)))?;
 
-            let peer_ik:  Option<&[u8]> = Some(&bundle.identity_key);
+            let peer_ik: Option<&[u8]> = Some(&bundle.identity_key);
             let peer_spk: Option<&[u8]> = Some(&bundle.signed_prekey);
             let peer_opk: Option<&[u8]> = bundle.onetime_prekey.as_ref().map(|k| k.as_ref());
-            let spk_sig:  Option<[u8; 64]> = Some(bundle.signature);
+            let spk_sig: Option<[u8; 64]> = Some(bundle.signature);
 
             let role = if initiator {
                 crate::handshake::HandshakeRole::Initiator
@@ -116,10 +122,16 @@ mod wasm_impl {
             };
 
             ctx.perform_handshake(
-                session_id, role, peer_ik, peer_spk,
-                spk_sig.as_ref(), peer_opk, None, None,
+                session_id,
+                role,
+                peer_ik,
+                peer_spk,
+                spk_sig.as_ref(),
+                peer_opk,
+                None,
+                None,
             )
-                .map_err(|e| JsValue::from_str(&format!("Handshake failed: {}", e)))?;
+            .map_err(|e| JsValue::from_str(&format!("Handshake failed: {}", e)))?;
 
             Ok(())
         })
@@ -138,14 +150,16 @@ mod wasm_impl {
     ) -> Result<Uint8Array, JsValue> {
         CONTEXT.with(|c| {
             let borrow = c.borrow();
-            let ctx = borrow.as_ref()
+            let ctx = borrow
+                .as_ref()
                 .ok_or_else(|| JsValue::from_str("Context not initialized"))?;
 
             if plaintext.is_empty() {
                 return Err(JsValue::from_str("Plaintext must not be empty"));
             }
 
-            let ciphertext = ctx.encrypt_message(session_id, plaintext, None)
+            let ciphertext = ctx
+                .encrypt_message(session_id, plaintext, None)
                 .map_err(|e| JsValue::from_str(&format!("Encryption failed: {}", e)))?;
 
             Ok(Uint8Array::from(&ciphertext[..]))
@@ -165,10 +179,12 @@ mod wasm_impl {
     ) -> Result<Uint8Array, JsValue> {
         CONTEXT.with(|c| {
             let borrow = c.borrow();
-            let ctx = borrow.as_ref()
+            let ctx = borrow
+                .as_ref()
                 .ok_or_else(|| JsValue::from_str("Context not initialized"))?;
 
-            let plaintext = ctx.decrypt_message(session_id, ciphertext, None)
+            let plaintext = ctx
+                .decrypt_message(session_id, ciphertext, None)
                 .map_err(|e| JsValue::from_str(&format!("Decryption failed: {}", e)))?;
 
             Ok(Uint8Array::from(&plaintext[..]))
@@ -209,11 +225,14 @@ mod wasm_impl {
             return Err(JsValue::from_str("Device public key must be 32 bytes"));
         }
 
-        let ch: &[u8; 32] = challenge.try_into()
+        let ch: &[u8; 32] = challenge
+            .try_into()
             .map_err(|_| JsValue::from_str("Challenge conversion failed"))?;
-        let sig: &[u8; 64] = signature.try_into()
+        let sig: &[u8; 64] = signature
+            .try_into()
             .map_err(|_| JsValue::from_str("Signature conversion failed"))?;
-        let pub_key: &[u8; 32] = device_pub.try_into()
+        let pub_key: &[u8; 32] = device_pub
+            .try_into()
             .map_err(|_| JsValue::from_str("Public key conversion failed"))?;
 
         crate::keystore::KeyStore::verify_signed_challenge(ch, sig, pub_key)
@@ -224,15 +243,21 @@ mod wasm_impl {
     ///
     /// `key` must be 32 bytes. Returns `nonce (12) || ciphertext || tag (16)`.
     #[wasm_bindgen]
-    pub fn wasm_encrypt(key: &[u8], plaintext: &[u8], associated_data: &[u8]) -> Result<Uint8Array, JsValue> {
+    pub fn wasm_encrypt(
+        key: &[u8],
+        plaintext: &[u8],
+        associated_data: &[u8],
+    ) -> Result<Uint8Array, JsValue> {
         use crate::crypto::CryptoHandler;
 
-        let key_arr: &[u8; 32] = key.try_into()
+        let key_arr: &[u8; 32] = key
+            .try_into()
             .map_err(|_| JsValue::from_str("Key must be exactly 32 bytes"))?;
 
         let handler = CryptoHandler::new(key_arr)
             .map_err(|e| JsValue::from_str(&format!("Invalid key: {}", e)))?;
-        let ct = handler.encrypt(plaintext, associated_data)
+        let ct = handler
+            .encrypt(plaintext, associated_data)
             .map_err(|e| JsValue::from_str(&format!("Encryption failed: {}", e)))?;
 
         Ok(Uint8Array::from(&ct[..]))
@@ -242,15 +267,21 @@ mod wasm_impl {
     ///
     /// `key` must be 32 bytes. `ciphertext` must be `nonce (12) || ciphertext || tag (16)`.
     #[wasm_bindgen]
-    pub fn wasm_decrypt(key: &[u8], ciphertext: &[u8], associated_data: &[u8]) -> Result<Uint8Array, JsValue> {
+    pub fn wasm_decrypt(
+        key: &[u8],
+        ciphertext: &[u8],
+        associated_data: &[u8],
+    ) -> Result<Uint8Array, JsValue> {
         use crate::crypto::CryptoHandler;
 
-        let key_arr: &[u8; 32] = key.try_into()
+        let key_arr: &[u8; 32] = key
+            .try_into()
             .map_err(|_| JsValue::from_str("Key must be exactly 32 bytes"))?;
 
         let handler = CryptoHandler::new(key_arr)
             .map_err(|e| JsValue::from_str(&format!("Invalid key: {}", e)))?;
-        let pt = handler.decrypt(ciphertext, associated_data)
+        let pt = handler
+            .decrypt(ciphertext, associated_data)
             .map_err(|e| JsValue::from_str(&format!("Decryption failed: {}", e)))?;
 
         Ok(Uint8Array::from(&pt[..]))

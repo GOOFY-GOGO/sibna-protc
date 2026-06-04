@@ -1,10 +1,12 @@
-use sibna_core::{Config, SecureContext, HandshakeRole};
 use sibna_core::ratchet::DoubleRatchetSession;
-use x25519_dalek::{StaticSecret, PublicKey};
+use sibna_core::{Config, HandshakeRole, SecureContext};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 fn ctx() -> SecureContext {
-    let mut cfg = Config::default();
-    cfg.require_safety_numbers = false;
+    let cfg = Config {
+        require_safety_numbers: false,
+        ..Config::default()
+    };
     SecureContext::new(cfg, None).unwrap()
 }
 
@@ -15,8 +17,17 @@ fn ratchet_pair() -> (DoubleRatchetSession, DoubleRatchetSession) {
     let b_sk = StaticSecret::from([0x02u8; 32]);
     let a_pk = PublicKey::from(&a_sk);
     let b_pk = PublicKey::from(&b_sk);
-    let alice = DoubleRatchetSession::from_shared_secret(&ss, a_sk, b_pk, cfg.clone(), HandshakeRole::Initiator).unwrap();
-    let bob   = DoubleRatchetSession::from_shared_secret(&ss, b_sk, a_pk, cfg, HandshakeRole::Responder).unwrap();
+    let alice = DoubleRatchetSession::from_shared_secret(
+        &ss,
+        a_sk,
+        b_pk,
+        cfg.clone(),
+        HandshakeRole::Initiator,
+    )
+    .unwrap();
+    let bob =
+        DoubleRatchetSession::from_shared_secret(&ss, b_sk, a_pk, cfg, HandshakeRole::Responder)
+            .unwrap();
     (alice, bob)
 }
 
