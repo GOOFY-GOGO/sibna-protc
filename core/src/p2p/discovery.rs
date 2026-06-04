@@ -3,8 +3,16 @@
 //! Exposes a `MdnsDiscovery` handle that registers the local node with `mdns-sd`
 //! so that nearby devices can find it automatically. It also browses the local
 //! network for other peers broadcasting the exact same service type.
+//!
+//! ## Privacy (SIBNA-2026-029)
+//!
+//! The mDNS service does **not** broadcast the node's long-term identity key.
+//! Instead it advertises a random 16-byte *session token* that is regenerated on
+//! every restart.  This prevents cross-session tracking by passive LAN observers.
+//! The real peer identity is only exchanged during the encrypted X3DH handshake.
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use rand::RngCore;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
@@ -14,11 +22,16 @@ use super::{P2pResult, P2pError};
 
 const SIBNA_SERVICE_TYPE: &str = "_sibna._tcp.local.";
 
+/// Length of the random session token in bytes (16 = 128 bits).
+const SESSION_TOKEN_LEN: usize = 16;
+
 /// A discovered peer from the local network.
 #[derive(Debug, Clone)]
 pub struct DiscoveredPeer {
-    /// The public Ed25519 identity key of the peer (hex-encoded)
-    pub peer_id_hex: String,
+    /// Random per-session token identifying the peer on the local network.
+    /// This is **not** the long-term identity key — it changes every restart.
+    /// Used for deduplication during mDNS discovery only.
+    pub session_token: String,
     /// Primary IP and Port to dial
     pub addr: SocketAddr,
     /// Human-readable node name
@@ -34,42 +47,45 @@ pub struct MdnsDiscovery {
 
 impl MdnsDiscovery {
     /// Initialise mDNS and optionally broadcast the local node's presence.
-    /// 
+    ///
     /// - `bind_addr`: The full `SocketAddr` the P2P node is listening on.
-    /// - `peer_id_bytes`: The 32-byte Ed25519 public key.
     /// - `node_name`: An optional human-readable name, e.g. "Alice's Phone".
+    ///
+    /// A random session token is generated for this mDNS session.  The caller's
+    /// long-term peer ID is **not** used — it is never broadcast over mDNS.
     pub fn new(
         bind_addr: SocketAddr,
-        peer_id_bytes: &[u8; 32],
         node_name: Option<&str>,
     ) -> P2pResult<Self> {
         let daemon = ServiceDaemon::new()
             .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("mDNS init: {}", e))))?;
 
-        let peer_id_hex = hex::encode(peer_id_bytes);
-        
+        // Generate a random session token (not the real peer ID).
+        let mut token_bytes = [0u8; SESSION_TOKEN_LEN];
+        rand::thread_rng().fill_bytes(&mut token_bytes);
+        let session_hex = hex::encode(token_bytes);
+
         let instance_name = if let Some(n) = node_name {
-            format!("{}-{}", n, &peer_id_hex[..8])
+            format!("{}-{}", n, &session_hex[..12])
         } else {
-            format!("Sibna-Node-{}", &peer_id_hex[..8])
+            format!("Sibna-{}", &session_hex[..12])
         };
 
         let mut properties = HashMap::new();
-        properties.insert("peer_id".to_string(), peer_id_hex.clone());
-        properties.insert("version".to_string(), "1".to_string());
+        properties.insert("session".to_string(), session_hex);
+        properties.insert("version".to_string(), "2".to_string());
 
         let host_name = format!("{}.local.", instance_name);
-        
+
         // If bind_addr is wildcard, we must resolve it to a real IP for mDNS advertisement
         let ad_ip = if bind_addr.ip().is_unspecified() {
             if_addrs::get_if_addrs().ok()
                 .and_then(|ifs: Vec<if_addrs::Interface>| {
                     ifs.into_iter()
-                        // Prefer IPv4 for broader compatibility in mDNS
                         .find(|iface: &if_addrs::Interface| !iface.is_loopback() && matches!(iface.addr, if_addrs::IfAddr::V4(_)))
                         .map(|iface| iface.addr.ip())
                 })
-                .unwrap_or_else(|| bind_addr.ip()) // fallback to wildcard if nothing found
+                .unwrap_or_else(|| bind_addr.ip())
         } else {
             bind_addr.ip()
         };
@@ -119,9 +135,9 @@ impl MdnsDiscovery {
                             continue;
                         }
 
-                        // Extract peer ID
+                        // Extract session token (the random per-session identifier)
                         let props = info.get_properties();
-                        let peer_id_hex = match props.get_property_val_str("peer_id") {
+                        let session_token = match props.get_property_val_str("session") {
                             Some(val) => val.to_string(),
                             None => continue,
                         };
@@ -134,7 +150,7 @@ impl MdnsDiscovery {
                         let addr = SocketAddr::new(ip, info.get_port());
 
                         let peer = DiscoveredPeer {
-                            peer_id_hex,
+                            session_token,
                             addr,
                             name: info.get_fullname().to_string(),
                         };

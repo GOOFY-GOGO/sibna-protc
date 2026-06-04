@@ -4,6 +4,8 @@ class SibnaSession {
   final Pointer<Void> _handle;
   final Uint8List peerId;
   bool _disposed = false;
+  int _messagesSent = 0;
+  int _messagesReceived = 0;
 
   SibnaSession._(this._handle, this.peerId);
 

@@ -359,7 +359,7 @@ impl X3dhHandshake {
 
         // Get our keys
         let our_identity = self.keystore.get_identity_keypair()?;
-        let our_signed_prekey = self.keystore.get_signed_prekey()?;
+        let mut our_signed_prekey = self.keystore.get_signed_prekey()?;
         
         // Get peer public keys
         let peer_ik = self.peer_identity_key.ok_or(ProtocolError::InvalidState)?;
@@ -383,7 +383,7 @@ impl X3dhHandshake {
         // Perform X3DH responder
         let x3dh_result = x3dh_responder_v3(
             our_identity.x25519_secret.as_ref().ok_or(ProtocolError::KeyNotFound)?,
-            &our_signed_prekey,
+            our_signed_prekey.secret.as_ref().ok_or(ProtocolError::KeyNotFound)?,
             our_opk.as_ref(),
             &peer_ik_pub,
             &peer_ek_pub,
@@ -399,22 +399,26 @@ impl X3dhHandshake {
         // Build associated data
         let ad = self.build_associated_data(&our_identity.x25519_public, &peer_ik);
 
-        // NOTE: In the standard X3DH responder flow, the responder does NOT generate
-        // a new ephemeral key — it uses its long-term signed prekey (SPK) for DH.
-        // HandshakeOutput::new requires a "local_ephemeral_key" parameter, which we
-        // populate with the SPK here. This is architecturally correct for X3DH:
-        // the SPK plays the role of a "semi-ephemeral" key (rotated periodically).
-        //
-        // SECURITY NOTE: The signed prekey is NOT forward-secret in the same way as
-        // a truly ephemeral key, because it is reused until explicitly rotated.
-        // Callers must rotate the signed prekey regularly (recommended: every 7 days,
-        // enforced by SignedPreKey::is_expired). The one-time prekey (OPK), when
-        // available, provides additional forward secrecy for the responder.
+        // SECURITY: Generate a fresh ephemeral X25519 key for this responder
+        // session. Reusing the signed prekey as the "local_ephemeral" key
+        // (as the original code did) breaks forward secrecy for the responder:
+        // any compromise of the SPK scalar would let the attacker recover
+        // every session that used it. A true per-session ephemeral costs
+        // ~one scalar multiplication and gives proper forward secrecy.
+        let mut ephemeral = x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+
+        // Build output with the fresh ephemeral scalar.
         let output = HandshakeOutput::new(
             x3dh_result.shared_secret,
-            our_signed_prekey.clone(), // SPK acts as semi-ephemeral key (see note above)
-            PublicKey::from(&our_signed_prekey),
+            std::mem::replace(&mut ephemeral, x25519_dalek::StaticSecret::from([0u8; 32])),
+            PublicKey::from(&ephemeral),
         ).with_associated_data(ad);
+
+        // Zeroize the local SPK scalar as soon as we are done with it.
+        // The X3DH computation already used it; we no longer need it after
+        // building the output.
+        use zeroize::Zeroize;
+        our_signed_prekey.zeroize();
 
         output.validate()?;
 

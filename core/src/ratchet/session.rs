@@ -6,7 +6,7 @@
 //! - skip_message_keys: all unwrap() replaced with proper ? propagation
 //! - perform_handshake: shared_secret no longer returned to caller
 
-use super::{ChainKey, DoubleRatchetState, RatchetHeader, RatchetMessage, RatchetConfig};
+use super::{ChainKey, DoubleRatchetState, RatchetHeader, RatchetMessage, RatchetConfig, ENCRYPTED_HEADER_SIZE};
 use super::super::crypto::{Encryptor, SecureRandom, RatchetKdf};
 use super::super::error::{ProtocolError, ProtocolResult};
 use super::super::validation::{validate_message, validate_associated_data};
@@ -155,8 +155,10 @@ impl DoubleRatchetSession {
 
         let mut state = self.state.write();
 
+        let mut rotated = false;
         if state.sending_chain.as_ref().map(|c| c.needs_rotation()).unwrap_or(true) {
             self.perform_dh_ratchet(&mut state)?;
+            rotated = true;
         }
 
         let dh_pub = state.dh_local.as_ref()
@@ -164,6 +166,10 @@ impl DoubleRatchetSession {
             .ok_or(ProtocolError::InvalidState)?;
 
         let sending_chain = state.sending_chain.as_mut()
+            .ok_or(ProtocolError::InvalidState)?;
+
+        // Derive header key from sending chain BEFORE advancing (next_message_key advances chain)
+        let header_key = sending_chain.derive_header_key()
             .ok_or(ProtocolError::InvalidState)?;
 
         // Nonce Safety Check 
@@ -207,7 +213,14 @@ impl DoubleRatchetSession {
         state.touch();
         state.messages_sent += 1;
 
-        Ok(message.to_bytes())
+        // v3.1: encrypt header before sending on wire (when enabled)
+        // SECURITY: If we just rotated the DH key, the header MUST be plaintext
+        // so the receiver can see the new dh_public and perform their own ratchet.
+        if self.config.enable_header_encryption && !rotated {
+            message.to_bytes_encrypted(&header_key)
+        } else {
+            Ok(message.to_bytes())
+        }
     }
 
     pub fn decrypt(&self, message: &[u8], associated_data: &[u8]) -> ProtocolResult<Vec<u8>> {
@@ -215,11 +228,53 @@ impl DoubleRatchetSession {
             return Err(ProtocolError::InvalidMessage);
         }
 
-        let ratchet_message = RatchetMessage::from_bytes(message)?;
+        let mut state = self.state.write();
+
+        // v3.1: Try to decrypt as encrypted header
+        // First, we need to figure out which header key to use.
+        // If the message triggers a DH ratchet, we need to do the ratchet first.
+        let ratchet_message = if self.config.enable_header_encryption && message.len() >= ENCRYPTED_HEADER_SIZE + 29 {
+            let mut decrypted = None;
+
+            // Try receiving chain header key first (most common case)
+            if let Some(ref chain) = state.receiving_chain {
+                if let Some(hk) = chain.derive_header_key() {
+                    if let Ok(msg) = RatchetMessage::from_bytes_encrypted(message, &hk) {
+                        decrypted = Some(msg);
+                    }
+                }
+            }
+
+            // Try sending chain header key (for echo scenarios)
+            if decrypted.is_none() {
+                if let Some(ref chain) = state.sending_chain {
+                    if let Some(hk) = chain.derive_header_key() {
+                        if let Ok(msg) = RatchetMessage::from_bytes_encrypted(message, &hk) {
+                            decrypted = Some(msg);
+                        }
+                    }
+                }
+            }
+
+            match decrypted {
+                Some(msg) => msg,
+                None => {
+                    // Can't decrypt header - this message likely requires a DH ratchet
+                    // (e.g., after peer restored session). Try to extract plaintext
+                    // header to determine if we need to ratchet, then retry.
+                    //
+                    // For now, fall back to plaintext header parsing which will
+                    // trigger the DH ratchet in the normal path below.
+                    RatchetMessage::from_bytes(message)?
+                }
+            }
+        } else {
+            RatchetMessage::from_bytes(message)?
+        };
+
         let header = ratchet_message.header;
         header.validate()?;
 
-        let mut state = self.state.write();
         let remote_dh = PublicKey::from(header.dh_public);
 
         let key_tuple = (header.dh_public, header.message_number);
@@ -396,7 +451,9 @@ impl DoubleRatchetSession {
             .as_secs();
         std::time::Duration::from_secs(now.saturating_sub(self.created_at_ts))
     }
-    pub fn state_summary(&self) -> super::StateSummary { self.state.read().summary() }
+    pub fn state_summary(&self) -> super::state::StateSummary {
+        self.state.read().summary()
+    }
     /// Check if the session has expired
     pub fn is_expired(&self) -> bool { self.state.read().is_expired() }
 
@@ -405,19 +462,68 @@ impl DoubleRatchetSession {
     /// Used for persistent storage of ratchet state.
     pub fn serialize_state(&self) -> ProtocolResult<Vec<u8>> {
         let state = self.state.read();
-        bincode::encode_to_vec(&*state, bincode::config::legacy())
+        bincode::serde::encode_to_vec(&*state, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)
     }
 
     /// Restore session state from serialized bytes.
+    ///
+    /// SIBNA-2026-014 (PATCH 22): the loaded state is re-hydrated via
+    /// `DoubleRatchetState::restore_dh_keys` so that the `dh_remote`
+    /// public key is reconstructed from its serialized bytes (the
+    /// `dh_remote` field itself is `#[serde(skip)]` — only the bytes
+    /// round-trip). After re-hydration, if `dh_local` is `None`
+    /// (always the case after restore — the private scalar is never
+    /// persisted) AND `dh_remote` is `Some`, we perform a fresh DH
+    /// ratchet step to generate a new ephemeral `dh_local` and
+    /// re-derive `root_key` and `sending_chain`. The peer's session
+    /// will detect the new `dh_public` in the header and perform its
+    /// own ratchet step to match — which is the correct,
+    /// spec-compliant behavior for a session restored mid-conversation.
+    ///
+    /// Without this fresh ratchet, the first `encrypt()` call after
+    /// restore would fail with `InvalidState` because `dh_local` was
+    /// `None` and the encrypt path requires it to construct the
+    /// header.
     pub fn deserialize_state(&self, data: &[u8]) -> ProtocolResult<()> {
-        let loaded: DoubleRatchetState = bincode::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v)
+        let mut loaded: DoubleRatchetState = bincode::serde::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|_| ProtocolError::DeserializationError)?;
-        
+
+        // Re-hydrate the remote public key from its serialized bytes
+        // (dh_remote itself is serde-skipped). Private scalar dh_local
+        // stays None — a fresh key pair is generated on the next
+        // outgoing ratchet step.
+        loaded.restore_dh_keys()
+            .map_err(|_| ProtocolError::DeserializationError)?;
+
         {
             let mut state = self.state.write();
             *state = loaded;
             let max_skip = state.max_skip;
+
+            // SIBNA-2026-014: prime the ratchet if needed so the
+            // session is fully ready to send. We perform the ratchet
+            // here (with the write lock already held) so the caller
+            // doesn't have to special-case the post-restore path.
+            //
+            // Only ratchet if:
+            // - dh_local is None (always true after restore, since the
+            //   private scalar is intentionally not persisted).
+            // - dh_remote is Some (we have a peer to ratchet against).
+            // - We actually have a sending_chain to rotate (otherwise
+            //   the ratchet would create one and orphan the original).
+            //
+            // If any of these are not met, we leave the state as-is
+            // and the next encrypt() call will either succeed (if a
+            // fresh session via `from_shared_secret` is set up
+            // properly) or fail with a clear error.
+            if state.dh_local.is_none()
+                && state.dh_remote.is_some()
+                && state.sending_chain.is_some()
+            {
+                self.perform_dh_ratchet(&mut state)?;
+            }
+
             let mut entries: Vec<_> = state.skipped_message_keys.clone().into_iter().collect();
             entries.sort_by_key(|((_, n), _)| *n);
             entries.reverse();
@@ -518,5 +624,62 @@ mod tests {
         let ct = s1.encrypt(b"test", b"ad").unwrap();
         let _ = s2.decrypt(&ct, b"ad").unwrap();
         assert!(s2.decrypt(&ct, b"ad").is_err());
+    }
+
+    // SIBNA-2026-014 regression: a session restored from
+    // serialize_state / deserialize_state must be able to **send**
+    // messages again. The pre-PATCH-22 deserialize_state did not call
+    // restore_dh_keys(), so the deserialized session had
+    // `dh_remote = None` and the first encrypt() would fail
+    // (perform_dh_ratchet skipped the DH step and the resulting
+    // sending chain was based on the wrong root_key).
+    #[test]
+    fn test_serialize_deserialize_roundtrip_can_send() {
+        let config = Config::default();
+        let shared_secret = [0x77u8; 32];
+        let sk1 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let pk1 = PublicKey::from(&sk1);
+        let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let pk2 = PublicKey::from(&sk2);
+
+        // Establish a real session between Alice (initiator) and Bob (responder).
+        let alice = DoubleRatchetSession::from_shared_secret(
+            &shared_secret, sk1.clone(), pk2, config.clone(), HandshakeRole::Initiator,
+        ).unwrap();
+        let bob = DoubleRatchetSession::from_shared_secret(
+            &shared_secret, sk2.clone(), pk1, config.clone(), HandshakeRole::Responder,
+        ).unwrap();
+
+        // Alice sends one message; Bob decrypts.
+        let ct0 = alice.encrypt(b"first message", b"ad").unwrap();
+        assert_eq!(bob.decrypt(&ct0, b"ad").unwrap(), b"first message");
+
+        // Alice serializes her state, then a *fresh* session is
+        // constructed (simulating an app restart). The fresh session
+        // has no DH keys, no chains — only the deserialized state.
+        let serialized = alice.serialize_state().unwrap();
+
+        let alice_restored = DoubleRatchetSession::new(config.clone()).unwrap();
+        assert!(alice_restored.deserialize_state(&serialized).is_ok());
+
+        // After restore: alice_restored should be able to send.
+        // The first send will perform a fresh DH ratchet (dh_local
+        // was None) and the message must be decryptable by Bob.
+        let ct1 = alice_restored
+            .encrypt(b"after restore", b"ad")
+            .expect("SIBNA-2026-014 regression: encrypt() failed after deserialize_state");
+        assert_eq!(
+            bob.decrypt(&ct1, b"ad").unwrap(),
+            b"after restore",
+            "Bob could not decrypt Alice's post-restore ciphertext"
+        );
+
+        // And Bob can still reply to the restored Alice.
+        let ct2 = bob.encrypt(b"reply", b"ad").unwrap();
+        assert_eq!(
+            alice_restored.decrypt(&ct2, b"ad").unwrap(),
+            b"reply",
+            "Alice (restored) could not decrypt Bob's reply"
+        );
     }
 }

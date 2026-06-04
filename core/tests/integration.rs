@@ -1,4 +1,4 @@
-use sibna_core::{Config, SecureContext, ProtocolError, HandshakeRole};
+use sibna_core::{Config, SecureContext, HandshakeRole};
 use sibna_core::ratchet::DoubleRatchetSession;
 use x25519_dalek::{StaticSecret, PublicKey};
 

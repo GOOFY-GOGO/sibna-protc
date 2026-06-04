@@ -6,7 +6,14 @@ namespace sibna {
 
 std::string Utils::bytes_to_base64(const bytes& data) {
     BIO* bio = BIO_new(BIO_s_mem());
+    if (!bio) {
+        throw CryptoError(ResultCode::INTERNAL_ERROR, "BIO_s_mem allocation failed");
+    }
     BIO* b64 = BIO_new(BIO_f_base64());
+    if (!b64) {
+        BIO_free(bio);
+        throw CryptoError(ResultCode::INTERNAL_ERROR, "BIO_f_base64 allocation failed");
+    }
     
     BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
     BIO_push(b64, bio);
@@ -26,7 +33,14 @@ std::string Utils::bytes_to_base64(const bytes& data) {
 
 bytes Utils::base64_to_bytes(const std::string& base64) {
     BIO* bio = BIO_new_mem_buf(base64.data(), static_cast<int>(base64.length()));
+    if (!bio) {
+        throw CryptoError(ResultCode::INTERNAL_ERROR, "BIO_new_mem_buf allocation failed");
+    }
     BIO* b64 = BIO_new(BIO_f_base64());
+    if (!b64) {
+        BIO_free(bio);
+        throw CryptoError(ResultCode::INTERNAL_ERROR, "BIO_f_base64 allocation failed");
+    }
     
     BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
     BIO_push(b64, bio);

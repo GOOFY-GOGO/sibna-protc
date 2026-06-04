@@ -11,12 +11,14 @@ pub mod encryptor;
 pub mod random;
 pub mod kdf;
 pub mod secure_compare;
+pub mod secure_memory;
 pub mod padding;
 
 pub use encryptor::*;
 pub use random::*;
 pub use kdf::*;
 pub use secure_compare::*;
+pub use secure_memory::SecureMemory;
 pub use padding::{PaddingMode, pad_message, unpad_message};
 pub use subtle::{Choice, ConstantTimeEq};
 
@@ -189,11 +191,10 @@ impl CryptoHandler {
     /// - Validates plaintext length
     /// - Constant-time operations where possible
     pub fn encrypt(&self, plaintext: &[u8], associated_data: &[u8]) -> CryptoResult<Vec<u8>> {
-        // Validate plaintext length
-        if plaintext.is_empty() {
-            return Err(CryptoError::InvalidCiphertext);
-        }
-        
+        // Validate plaintext length.
+        // Empty plaintext is allowed for cover (dummy) traffic so the ciphertext
+        // is indistinguishable from a real message to network observers. The
+        // associated_data still binds the message to its session/header.
         if plaintext.len() > MAX_PLAINTEXT_LENGTH {
             return Err(CryptoError::EncryptionFailed);
         }
@@ -239,10 +240,7 @@ impl CryptoHandler {
             });
         }
 
-        // Validate plaintext
-        if plaintext.is_empty() {
-            return Err(CryptoError::InvalidCiphertext);
-        }
+        // Empty plaintext is permitted (see `encrypt` doc).
 
         let ciphertext = self.cipher
             .encrypt(nonce.into(), chacha20poly1305::aead::Payload {
@@ -273,8 +271,9 @@ impl CryptoHandler {
     /// - Constant-time comparison for authentication
     /// - Zeroizes sensitive data after use
     pub fn decrypt(&self, ciphertext: &[u8], associated_data: &[u8]) -> CryptoResult<Vec<u8>> {
-        // Validate ciphertext length
-        if ciphertext.len() < MIN_CIPHERTEXT_LENGTH {
+        // Validate ciphertext length. Minimum is nonce + tag = 28 bytes
+        // (no plaintext). Cover (dummy) traffic produces exactly this size.
+        if ciphertext.len() < NONCE_LENGTH + TAG_LENGTH {
             return Err(CryptoError::InvalidCiphertext);
         }
 
@@ -310,7 +309,7 @@ impl CryptoHandler {
         ciphertext: &mut [u8],
         associated_data: &[u8],
     ) -> CryptoResult<Vec<u8>> {
-        if ciphertext.len() < MIN_CIPHERTEXT_LENGTH {
+        if ciphertext.len() < NONCE_LENGTH + TAG_LENGTH {
             return Err(CryptoError::InvalidCiphertext);
         }
 
@@ -588,11 +587,17 @@ mod tests {
 
     #[test]
     fn test_empty_plaintext() {
+        // Empty plaintext is now allowed for cover (dummy) traffic so the
+        // ciphertext is indistinguishable from a real message. The decrypt
+        // round-trip must still succeed.
         let key = KeyGenerator::generate_key().unwrap();
         let handler = CryptoHandler::new(key.as_ref()).unwrap();
 
         let result = handler.encrypt(b"", b"ad");
-        assert!(result.is_err());
+        assert!(result.is_ok(), "Empty plaintext should be permitted for cover traffic");
+        let ct = result.unwrap();
+        let pt = handler.decrypt(&ct, b"ad").unwrap();
+        assert_eq!(pt, b"");
     }
 
     #[test]

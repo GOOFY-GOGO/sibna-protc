@@ -95,7 +95,7 @@ pub async fn challenge_handler(
     let expires_at = Utc::now().timestamp() + 60;
 
     // FIX N-03: store an HMAC-SHA256 of the challenge keyed by the JWT secret.
-    // If the sled DB is read by an attacker, they cannot recover the challenge
+    // If the redb DB is read by an attacker, they cannot recover the challenge
     // bytes and therefore cannot forge a valid proof response.
     let mut mac = Hmac::<Sha256>::new_from_slice(state.rt.jwt_secret.as_bytes())
         .expect("HMAC accepts keys of any length");
@@ -125,7 +125,10 @@ pub async fn prove_handler(
     // 1. Look up the challenge
     let db_key = format!("challenge:{}", req.identity_key_hex);
     let stored = match state.db.tree_challenges.get(db_key.as_bytes()) {
-        Ok(Some(v)) => String::from_utf8_lossy(&v).to_string(),
+        Ok(Some(v)) => {
+            let v: Vec<u8> = v;
+            String::from_utf8_lossy(&v).to_string()
+        }
         _ => return (StatusCode::UNAUTHORIZED, "No pending challenge").into_response(),
     };
 

@@ -5,16 +5,18 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist/",
-    "sibna.wasm"
+    "dist/"
   ],
   "scripts": {
     "build": "tsc",
     "build:wasm": "wasm-pack build --target web --out-dir pkg ../core",
-    "test": "jest",
+    "test": "jest --passWithNoTests",
     "lint": "eslint src/ --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",
     "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.0.0"
   },
   "keywords": [
     "cryptography",
@@ -44,6 +46,11 @@
     "prettier": "^3.0.0",
     "ts-jest": "^29.1.0",
     "typescript": "^5.0.0"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": ["**/tests/**/*.test.ts"]
   },
   "engines": {
     "node": ">=16.0.0"

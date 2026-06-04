@@ -1,4 +1,4 @@
-# Sibna Protocol v3.0.0 - Production Hardened Edition
+# Sibna Protocol v3.0.1 - Production Hardened Edition
 # Implementation of the Signal Protocol. No independent external security audit has been performed.
 # See SECURITY.md for current threat model, limitations, and audit roadmap.
 
@@ -30,7 +30,7 @@ serde_json      = "1.0.117"
 # bincode 2.x uses a new API but provides a `bincode::config::legacy()` compatibility
 # mode that serializes/deserializes in the 1.x wire format — existing stored data
 # is fully readable without migration.
-bincode         = { version = "2", features = ["derive"] }
+bincode         = { version = "2", features = ["derive", "serde"] }
 
 # === Error handling ===
 thiserror       = "1.0.61"
@@ -49,7 +49,7 @@ mdns-sd         = "0.13"
 if-addrs        = "0.13"
 igd             = "0.12"
 stun            = "0.6"
-fips203         = "0.4.0"
+fips203         = "0.4.3"
 
 # === Utilities ===
 bytes           = { version = "1.6.0", features = ["serde"] }
@@ -75,7 +75,7 @@ js-sys          = { version = "0.3.69" }
 web-sys         = { version = "0.3.69" }
 
 [workspace.package]
-version     = "3.0.0"
+version     = "3.0.1"
 edition     = "2021"
 rust-version = "1.75"
 license     = "Apache-2.0 OR MIT"

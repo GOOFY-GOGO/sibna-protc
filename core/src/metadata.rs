@@ -20,8 +20,9 @@ pub use crate::crypto::padding::BLOCK_SIZE_STANDARD as PADDING_BLOCK_SIZE;
 pub const MAX_JITTER_MS: u64 = 500;
 
 /// Pad a message payload to the nearest multiple of PADDING_BLOCK_SIZE
-pub fn pad_payload(payload: &[u8]) -> Vec<u8> {
+pub fn pad_payload(payload: &[u8]) -> Result<Vec<u8>, PaddingError> {
     crate::crypto::padding::pad_message(payload, crate::crypto::padding::PaddingMode::Standard)
+        .map_err(|_| PaddingError::InvalidPadding)
 }
 
 /// Remove padding from a received payload
@@ -30,6 +31,7 @@ pub fn unpad_payload(padded: &[u8]) -> Result<Vec<u8>, PaddingError> {
         .map_err(|_| PaddingError::InvalidPadding)
 }
 
+#[allow(dead_code)]
 fn round_up_to_block(len: usize) -> usize {
     if len == 0 {
         return PADDING_BLOCK_SIZE;
@@ -142,8 +144,12 @@ mod tests {
     #[test]
     fn test_padding_roundtrip_small() {
         let payload = b"Hello Sibna!";
-        let padded = pad_payload(payload);
-        assert_eq!(padded.len(), PADDING_BLOCK_SIZE);
+        let padded = pad_payload(payload).expect("pad small");
+        // SIBNA-2026-018 (PATCH 20): on-wire size is no longer
+        // deterministic; minimum is one block, max is 1 + 7 = 8 blocks.
+        assert!(padded.len() >= PADDING_BLOCK_SIZE);
+        assert!(padded.len() <= 8 * PADDING_BLOCK_SIZE);
+        assert_eq!(padded.len() % PADDING_BLOCK_SIZE, 0);
         let unpadded = unpad_payload(&padded).unwrap();
         assert_eq!(unpadded, payload);
     }
@@ -151,18 +157,35 @@ mod tests {
     #[test]
     fn test_padding_roundtrip_large() {
         let payload = vec![0xABu8; 1025];
-        let padded = pad_payload(&payload);
-        assert_eq!(padded.len(), 2 * PADDING_BLOCK_SIZE);
+        let padded = pad_payload(&payload).expect("pad large");
+        // SIBNA-2026-018 (PATCH 20): the on-wire size is no longer
+        // *deterministic* — PATCH 20 adds 0..7 extra full blocks of
+        // random padding. The minimum is 2*BLOCK_SIZE; the maximum
+        // is 2*BLOCK_SIZE + 7*BLOCK_SIZE = 9*BLOCK_SIZE.
+        assert!(padded.len() >= 2 * PADDING_BLOCK_SIZE);
+        assert!(padded.len() <= (2 + 7) * PADDING_BLOCK_SIZE);
+        assert_eq!(padded.len() % PADDING_BLOCK_SIZE, 0);
         let unpadded = unpad_payload(&padded).unwrap();
         assert_eq!(unpadded, payload);
     }
 
     #[test]
     fn test_padding_size_indistinguishable() {
-        // Two messages of very different sizes should produce same padded size
+        // SIBNA-2026-018 (PATCH 20): exact on-wire size is no longer
+        // deterministic. Two messages of different sizes each pick
+        // independently from 0..7 extra blocks, so their padded
+        // sizes may differ. The invariant is: both fit in the same
+        // block range [BLOCK_SIZE, 8*BLOCK_SIZE], and both are
+        // indistinguishable to an observer who doesn't know the
+        // extra-block draw.
         let small = b"Hi";
         let medium = vec![0u8; 800];
-        assert_eq!(pad_payload(small).len(), pad_payload(&medium).len());
+        let s = pad_payload(small).expect("a").len();
+        let m = pad_payload(&medium).expect("b").len();
+        assert!(s >= PADDING_BLOCK_SIZE && s <= 8 * PADDING_BLOCK_SIZE);
+        assert!(m >= PADDING_BLOCK_SIZE && m <= 8 * PADDING_BLOCK_SIZE);
+        assert_eq!(s % PADDING_BLOCK_SIZE, 0);
+        assert_eq!(m % PADDING_BLOCK_SIZE, 0);
     }
 
     #[test]

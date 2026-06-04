@@ -119,7 +119,23 @@ public class IdentityKeyPair {
      * Clear sensitive key material.
      */
     public void clear() {
-        // Best effort to clear - actual clearing depends on Key implementation
+        // Zeroize the encoded form of the keys if possible
+        try {
+            if (ed25519KeyPair != null && ed25519KeyPair.getPrivate() != null) {
+                byte[] encoded = ed25519KeyPair.getPrivate().getEncoded();
+                if (encoded != null) {
+                    Arrays.fill(encoded, (byte) 0);
+                }
+            }
+            if (x25519KeyPair != null && x25519KeyPair.getPrivate() != null) {
+                byte[] encoded = x25519KeyPair.getPrivate().getEncoded();
+                if (encoded != null) {
+                    Arrays.fill(encoded, (byte) 0);
+                }
+            }
+        } catch (Exception e) {
+            // Best effort - some Key implementations don't support getEncoded()
+        }
     }
 
     private static String bytesToHex(byte[] bytes) {

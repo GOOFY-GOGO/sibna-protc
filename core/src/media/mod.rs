@@ -43,11 +43,11 @@ pub enum ProtocolPayload {
 impl ProtocolPayload {
     /// Serialize payload to raw bytes for the encryptor
     pub fn to_bytes(&self) -> Result<Vec<u8>, crate::error::ProtocolError> {
-        bincode::encode_to_vec(self, bincode::config::legacy()).map_err(|_| crate::error::ProtocolError::InvalidMessage)
+        bincode::serde::encode_to_vec(self, bincode::config::legacy()).map_err(|_| crate::error::ProtocolError::InvalidMessage)
     }
 
     /// Deserialize payload from a decrypted byte stream
     pub fn from_bytes(data: &[u8]) -> Result<Self, crate::error::ProtocolError> {
-        bincode::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v).map_err(|_| crate::error::ProtocolError::InvalidMessage)
+        bincode::serde::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v).map_err(|_| crate::error::ProtocolError::InvalidMessage)
     }
 }

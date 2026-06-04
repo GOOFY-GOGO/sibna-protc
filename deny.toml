@@ -41,9 +41,7 @@ unmaintained  = "deny"
 yanked        = "deny"
 notice        = "warn"
 ignore = [
-    # KNOWN: sled 0.34 is unmaintained (tracked in §5.4 backlog — migrate to redb).
-    # Exception granted until Q3 2026 migration sprint. Review quarterly.
-    # "RUSTSEC-XXXX-XXXX",   # ← fill in if/when a sled advisory is issued
+    # RESOLVED: sled 0.34 replaced with redb (PATCH 23). Removed from dependency tree.
 ]
 
 # ─── Dependency bans ─────────────────────────────────

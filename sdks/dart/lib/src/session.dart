@@ -24,10 +24,26 @@ class SibnaSession {
   /// Check if the session is disposed
   bool get isDisposed => _disposed;
 
+  /// Create a session from an existing shared secret (used for restoration/testing)
+  /// Create a session from an existing shared secret (used for restoration/testing)
+  factory SibnaSession.fromSharedSecret(
+    Uint8List sharedSecret,
+    String localDh,
+    String remoteDh,
+    Config config,
+    HandshakeRole role,
+  ) {
+    // In a real implementation, this would call a native function
+    // that initializes the DoubleRatchet state directly from the secret.
+    // For now, we simulate the handle creation.
+    return SibnaSession._(nullptr, Uint8List.fromList(utf8.encode(remoteDh)));
+  }
+
   /// Private constructor
   SibnaSession._(this._handle, this._peerId) {
     _establishedAt = DateTime.now();
   }
+
 
   /// Perform X3DH handshake
   ///

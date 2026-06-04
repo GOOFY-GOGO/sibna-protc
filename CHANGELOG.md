@@ -5,6 +5,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [3.0.1] — 2026-06-04 (Security Hardening)
+
+### Fixed
+- **C++ SDK double-free**: `create_session` and `create_group` returned `unique_ptr` with default deleter on pointers still owned by internal maps. Now uses null deleter for non-owning pointers.
+- **C++ SDK BIO_new NULL checks**: `Utils::bytes_to_base64` and `Utils::base64_to_bytes` now validate `BIO_new()` return values before use.
+- **Cover traffic delivery**: `send_dummy_to_relay` now actually transmits encrypted dummy packets via the relay server instead of silently discarding them.
+- **Relay message delivery**: `send_via_relay` now constructs and sends signed envelopes via `RelayClient` instead of only encrypting without transmission.
+- **Tor/SOCKS5 proxy wiring**: `P2pNode::connect` now routes through `connect_with_optional_proxy` using the configured proxy address. `HybridRouter` initializes `RelayClient` with proxy support from `Config::proxy_url`.
+- **Documentation inconsistencies**: Updated sled references across 8 documentation files to reflect the completed migration to redb.
+
+### Changed
+- **RelayClient**: Added `send_envelope` method for transmitting signed JSON envelopes to the relay server.
+- **HybridRouter**: Added `relay_client` field and `init_relay_from_config` method for relay integration.
+- **Dead code removal**: Removed unused `Socks5Config` and `TlsConfig` structs from `transport/mod.rs`.
+
+### Added
+- **C++ SDK test suite**: 7 test files covering identity, crypto, session, context, group, safety number, and utility operations (37 test cases total).
+- **Test infrastructure**: CMakeLists.txt for C++ tests with Catch2 framework integration.
+
+---
+
 ## [3.0.0] — 2026-04-06 (Ultimate Upgrade)
 
 ### Security Fixes — CRITICAL
@@ -22,7 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ### Maintenance
 - Deleted leaked PowerShell output (`check_out.txt`).
-- Standardized project version to `v3.0.0` across all crates and documentation.
+- Standardized project version to `v3.0.1` across all crates and documentation.
 
 ---
 

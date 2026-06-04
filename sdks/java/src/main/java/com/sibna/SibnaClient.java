@@ -1,13 +1,11 @@
 package com.sibna;
 
 import com.sibna.crypto.CryptoProvider;
-import com.sibna.crypto.ChaCha20Poly1305;
 import com.sibna.identity.IdentityKeyPair;
 import com.sibna.identity.PreKeyBundle;
 import com.sibna.protocol.DoubleRatchet;
 import com.sibna.protocol.X3DHHandshake;
 import com.sibna.transport.HttpTransport;
-import com.sibna.transport.WebSocketTransport;
 import com.sibna.group.GroupSession;
 import com.sibna.exceptions.*;
 
@@ -27,8 +25,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * - Safety numbers for identity verification
  */
 public class SibnaClient implements AutoCloseable {
-    public static final String VERSION = "3.0.0";
-    public static final int PROTOCOL_VERSION = 8;
+    public static final String VERSION = "3.0.1";
+    public static final int PROTOCOL_VERSION = 10;
 
     private final CryptoProvider crypto;
     private final HttpTransport httpTransport;

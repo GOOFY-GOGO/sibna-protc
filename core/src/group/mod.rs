@@ -562,13 +562,13 @@ impl GroupMessage {
 
     /// Serialize to bytes
     pub fn to_bytes(&self) -> ProtocolResult<Vec<u8>> {
-        bincode::encode_to_vec(self, bincode::config::legacy())
+        bincode::serde::encode_to_vec(self, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)
     }
 
     /// Deserialize from bytes
     pub fn from_bytes(data: &[u8]) -> ProtocolResult<Self> {
-        bincode::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v)
+        bincode::serde::decode_from_slice(data, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|_| ProtocolError::DeserializationError)
     }
 }

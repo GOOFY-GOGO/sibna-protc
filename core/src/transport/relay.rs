@@ -140,4 +140,34 @@ impl RelayClient {
         ws_url.set_path(&format!("/ws/{}", identity_key_hex));
         Ok(ws_url.to_string())
     }
+
+    /// Send a signed envelope to the relay server.
+    ///
+    /// # Security
+    /// - FIX #4: Network errors don't leak details
+    pub async fn send_envelope(&self, envelope_json: &str) -> ProtocolResult<()> {
+        let url = self.server_url
+            .join("/v1/messages/send")
+            .map_err(|_| ProtocolError::InvalidMessage)?;
+
+        let res = self.http_client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .body(envelope_json.to_string())
+            .send()
+            .await
+            .map_err(|e| {
+                warn!("RELAY_SECURITY: Envelope send failed");
+                debug!("Send error: {}", e);
+                ProtocolError::InternalError
+            })?;
+
+        if res.status().is_success() {
+            debug!("RELAY_ENVELOPE_SENT: {} bytes", envelope_json.len());
+            Ok(())
+        } else {
+            warn!("RELAY_SECURITY: Envelope rejected with status {}", res.status());
+            Err(ProtocolError::HandshakeFailed)
+        }
+    }
 }

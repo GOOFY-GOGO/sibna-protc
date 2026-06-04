@@ -92,22 +92,19 @@ Result<std::unique_ptr<Session>> Context::create_session(const bytes& peer_id) {
     
     std::string peer_id_hex = Utils::bytes_to_hex(peer_id);
     
-    // Check if session already exists
+    // Check if session already exists - return existing session
     auto it = impl->sessions.find(peer_id_hex);
     if (it != impl->sessions.end()) {
-        // Return existing session
-        auto existing = std::unique_ptr<Session>();
-        existing.reset(it->second.get());
-        // Note: This is a simplified version - in production you'd clone the session
-        // or return an error about duplicate sessions
+        auto* raw_ptr = it->second.get();
+        return std::unique_ptr<Session>(raw_ptr, [](Session*){});
     }
     
-    auto session = std::unique_ptr<Session>(new Session(peer_id, nullptr));
+    // Create new session and store it
+    auto session = std::make_unique<Session>(peer_id, nullptr);
     auto* session_ptr = session.get();
     impl->sessions[peer_id_hex] = std::move(session);
     
-    // Return a new pointer to the stored session
-    return std::unique_ptr<Session>(new Session(peer_id, nullptr));
+    return std::unique_ptr<Session>(session_ptr, [](Session*){});
 }
 
 Result<bytes> Context::encrypt_message(
@@ -165,7 +162,7 @@ Result<std::unique_ptr<GroupSession>> Context::create_group(const group_id& id) 
     auto* group_ptr = group.get();
     impl->groups[group_id_hex] = std::move(group);
     
-    return std::make_unique<GroupSession>(id);
+    return std::unique_ptr<GroupSession>(group_ptr, [](GroupSession*){});
 }
 
 Result<Context::Stats> Context::get_stats() const {

@@ -72,7 +72,7 @@
 **التغيير:** `server/src/main.rs`
 - استُبدل `axum::serve(...).await` بـ `.with_graceful_shutdown(signal_handler)`
 - يعمل على UNIX (SIGTERM + SIGINT) وWindows (Ctrl-C)
-- `db.flush_async().await` يُنفَّذ قبل الخروج لمنع تلف sled
+- `drop(db_for_shutdown)` يُنفَّذ قبل الخروج (redb تُلتزم المعاملات فوراً)
 
 ### §3.5 [HIGH] — Python SDK certificate pinning + async
 **التغيير:** `sdks/python/sibna/client.py`
@@ -152,7 +152,7 @@
 ## ملاحظات ما بعد الإصلاح
 
 ### تعارضات الإصدارات المعلّقة
-- **`sled 0.34`**: مُعلَّق، لا تطوير نشط. مُستثنى في `deny.toml` حتى Q3 2026. الخطة: الانتقال إلى `redb`.
+- **`sled 0.34`**: أُزيل واستُبدل بـ `redb` في السيرفر و `core` crate.
 - **`rand 0.8.5`**: يعمل. 0.9 متاح لكن يتطلب migration. مُؤجَّل لـ v3.1.0.
 
 ### ما يتطلب فعلاً خارجياً

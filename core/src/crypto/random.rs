@@ -105,12 +105,16 @@ impl SecureRandom {
             }
         }
 
+        // SECURITY: Wipe OsRng-derived buffer. Sensitive entropy must not
+        // linger on the heap after use (otherwise an attacker with heap
+        // disclosure primitives could recover a portion of the output).
+        use zeroize::Zeroize;
+        os_bytes.zeroize();
+
         self.update_entropy_pool(buf);
 
         self.bytes_generated =
             self.bytes_generated.saturating_add(buf.len() as u64);
-    }
-
     }
 
     pub fn next_u64(&mut self) -> u64 {

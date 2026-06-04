@@ -3,10 +3,10 @@
 #include "types.hpp"
 #include "error.hpp"
 #include <algorithm>
-#include <random>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
+#include <openssl/rand.h>
 
 namespace sibna {
 
@@ -108,28 +108,22 @@ public:
         }
     }
 
-    // Generate random bytes
+    // Generate cryptographically secure random bytes using OpenSSL
     static bytes random_bytes(size_t length) {
-        static thread_local std::random_device rd;
-        static thread_local std::mt19937 gen(rd());
-        static thread_local std::uniform_int_distribution<> dis(0, 255);
-
         bytes result(length);
-        for (auto& b : result) {
-            b = static_cast<byte>(dis(gen));
+        if (length > 0) {
+            if (RAND_bytes(result.data(), static_cast<int>(length)) != 1) {
+                throw SibnaError(ResultCode::INTERNAL_ERROR, "Failed to generate random bytes");
+            }
         }
         return result;
     }
 
     template<size_t N>
     static std::array<byte, N> random_bytes() {
-        static thread_local std::random_device rd;
-        static thread_local std::mt19937 gen(rd());
-        static thread_local std::uniform_int_distribution<> dis(0, 255);
-
         std::array<byte, N> result;
-        for (auto& b : result) {
-            b = static_cast<byte>(dis(gen));
+        if (RAND_bytes(result.data(), static_cast<int>(N)) != 1) {
+            throw SibnaError(ResultCode::INTERNAL_ERROR, "Failed to generate random bytes");
         }
         return result;
     }

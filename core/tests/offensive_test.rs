@@ -225,7 +225,9 @@ async fn test_offensive_pq_downgrade_prevention() {
         HandshakeRole::Initiator,
         Some(&bob_id),
         Some(&bob_bundle),
-        None, 
+        None,
+        None,
+        None,
         None,
     );
 

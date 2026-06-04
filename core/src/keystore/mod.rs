@@ -86,6 +86,14 @@ impl IdentityKeyPair {
             .try_into()
             .map_err(|_| ProtocolError::InvalidKeyLength)?;
 
+        // Reject the 8 known low-order X25519 public keys to defend against
+        // small-subgroup / Pohlig-Hellman attacks. Without this check a
+        // caller could load an identity whose DH output is always the
+        // neutral element — the resulting "shared secret" would be 0 and
+        // no key material would actually be exchanged.
+        crate::crypto::validate_public_key(&x25519_public)
+            .map_err(|_| ProtocolError::InvalidKey)?;
+
         // Use HKDF with distinct info tags to derive separate key material
         // for Ed25519 and X25519. Reusing the raw seed for both leaks cross-domain
         // key material and violates cryptographic separation.
@@ -174,13 +182,36 @@ impl IdentityKeyPair {
             return false;
         }
 
+        // Ed25519 secret → public consistency check.
+        // Without this, a maliciously crafted identity could present a valid
+        // X25519 keypair but a mismatched Ed25519 public, making signatures
+        // unverifiable or worse, opening a DH-binding MITM window.
+        if let Some(ref ed_secret) = self.ed25519_secret {
+            use ed25519_dalek::SigningKey;
+            let derived = SigningKey::from_bytes(ed_secret);
+            if !constant_time_eq(&derived.verifying_key().to_bytes(), &self.ed25519_public) {
+                return false;
+            }
+        }
+
+        // Reject low-order X25519 public keys (small-subgroup / Pohlig-Hellman attack).
+        if crate::crypto::validate_public_key(&self.x25519_public).is_err() {
+            return false;
+        }
+
         // Check derived public key matches
         if let Some(ref x_secret) = self.x25519_secret {
             let derived_public = x25519_dalek::PublicKey::from(x_secret);
-            constant_time_eq(derived_public.as_bytes(), &self.x25519_public)
-        } else {
-            false
+            if !constant_time_eq(derived_public.as_bytes(), &self.x25519_public) {
+                return false;
+            }
+            // Belt-and-braces: the derived public is also checked.
+            if crate::crypto::validate_public_key(&self.x25519_public).is_err() {
+                return false;
+            }
         }
+
+        true
     }
 }
 
@@ -534,12 +565,29 @@ impl KeyStore {
         Ok(())
     }
 
+    /// Rotate the signed prekey (generate a new one and replace the old).
+    /// Returns the new public key.
+    pub fn rotate_signed_prekey(&mut self) -> ProtocolResult<[u8; 32]> {
+        self.generate_signed_prekey()?;
+        let pub_key = self.get_signed_prekey_public()?;
+        Ok(pub_key)
+    }
+
+    /// Replenish one-time prekeys if they fall below the specified threshold.
+    /// Returns the number of new keys generated.
+    pub fn replenish_onetime_prekeys(&mut self, threshold: usize, target: usize) -> ProtocolResult<usize> {
+        let current_count = self.onetime_prekey_count();
+        if current_count >= threshold {
+            return Ok(0);
+        }
+        let needed = target.saturating_sub(current_count);
+        self.generate_onetime_prekeys(needed)?;
+        Ok(needed)
+    }
+
     /// Get signed prekey
-    pub fn get_signed_prekey(&self) -> ProtocolResult<x25519_dalek::StaticSecret> {
-        self.signed_prekey
-            .as_ref()
-            .and_then(|k| k.secret.clone())
-            .ok_or(ProtocolError::KeyNotFound)
+    pub fn get_signed_prekey(&self) -> ProtocolResult<SignedPreKey> {
+        self.signed_prekey.clone().ok_or(ProtocolError::KeyNotFound)
     }
 
     /// Get signed prekey public
@@ -736,7 +784,7 @@ impl KeyStore {
         use crate::crypto::CryptoHandler;
 
         // Serialize with bincode
-        let plaintext = bincode::encode_to_vec(self, bincode::config::legacy())
+        let plaintext = bincode::serde::encode_to_vec(self, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)?;
 
         // Encrypt with ChaCha20-Poly1305
@@ -757,7 +805,7 @@ impl KeyStore {
         let plaintext = handler.decrypt(data, b"SibnaKeyStore_v3")
             .map_err(|_| ProtocolError::StorageError)?;
 
-        let mut store: KeyStore = bincode::decode_from_slice(&plaintext, bincode::config::legacy()).map(|(v,_)|v)
+        let mut store: KeyStore = bincode::serde::decode_from_slice(&plaintext, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|_| ProtocolError::DeserializationError)?;
 
         // Restore transient (non-serialized) private key fields from their serialized bytes
@@ -1098,8 +1146,12 @@ mod tests {
         // Sign a different challenge than the one being verified
         let signature = signing_key.sign(&wrong_challenge).to_bytes();
 
-        let result = KeyStore::verify_signed_challenge(&challenge, &signature, &ed25519_pub).unwrap();
-        assert!(!result, "Signature over wrong challenge must fail");
+        // New behavior: returns Err(InvalidSignature) on bad signature, not Ok(false).
+        // This forces callers to handle the failure explicitly (avoids "soft" Ok(false)
+        // bugs that get ignored by unwrap_or or pattern-match fallthroughs).
+        let result = KeyStore::verify_signed_challenge(&challenge, &signature, &ed25519_pub);
+        assert!(result.is_err(), "Signature over wrong challenge must return Err");
+        assert!(matches!(result.unwrap_err(), ProtocolError::InvalidSignature));
     }
 
     #[test]

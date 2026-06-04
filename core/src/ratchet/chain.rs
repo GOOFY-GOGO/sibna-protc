@@ -18,7 +18,27 @@ pub struct ChainKey {
 }
 
 impl ChainKey {
-    pub const DEFAULT_MAX_MESSAGES: u64 = 1000;
+    /// Default per-chain message limit.
+    ///
+    /// INVARIANT: must be >= `ratchet::MAX_SKIPPED_MESSAGES` (2000) so that
+    /// the chain cannot be exhausted by a peer advancing past it before the
+    /// receiver's skipped-key window closes. We use 2x
+    /// `MAX_SKIPPED_MESSAGES` (matching `RatchetConfig::max_chain_messages`
+    /// in `ratchet/mod.rs`) so that even if a peer skips the full window
+    /// in one burst, the chain still has headroom before rotation.
+    ///
+    /// SIBNA-2026-012: was 1000 (smaller than MAX_SKIPPED_MESSAGES=2000).
+    /// Bumped to 4000 in PATCH 19.
+    pub const DEFAULT_MAX_MESSAGES: u64 = 4000;
+
+    // Compile-time guard: the default must never drop below the skipped-key
+    // window. If a future refactor shrinks this, the build fails.
+    const _CHAIN_GE_SKIP: () = assert!(
+        Self::DEFAULT_MAX_MESSAGES as usize >= super::MAX_SKIPPED_MESSAGES,
+        "ChainKey::DEFAULT_MAX_MESSAGES must be >= MAX_SKIPPED_MESSAGES \
+         (SIBNA-2026-012): chain exhaustion otherwise breaks decrypt after \
+         skipped-key window closes."
+    );
 
     pub fn new(key: [u8; 32]) -> Self {
         let created_at = crate::crypto::current_timestamp().unwrap_or(0);
@@ -122,5 +142,52 @@ mod tests {
         assert!(chain.next_message_key().is_some());
         assert!(chain.next_message_key().is_some());
         assert!(chain.next_message_key().is_none());
+    }
+
+    // SIBNA-2026-012 regression: the default per-chain cap must be at least
+    // MAX_SKIPPED_MESSAGES (2000) so a malicious peer cannot exhaust the
+    // chain before the receiver's skipped-key window closes.
+    #[test]
+    fn default_chain_meets_skipped_key_window() {
+        // Compile-time link: this would not compile if ChainKey::DEFAULT_MAX_MESSAGES
+        // were smaller than MAX_SKIPPED_MESSAGES, but verify the runtime invariant too.
+        assert!(
+            ChainKey::DEFAULT_MAX_MESSAGES as usize >= crate::ratchet::MAX_SKIPPED_MESSAGES,
+            "DEFAULT_MAX_MESSAGES ({}) must be >= MAX_SKIPPED_MESSAGES ({})",
+            ChainKey::DEFAULT_MAX_MESSAGES,
+            crate::ratchet::MAX_SKIPPED_MESSAGES,
+        );
+
+        // Sanity: the default-cap chain must hold at least MAX_SKIPPED_MESSAGES
+        // message keys AND must exhaust at exactly DEFAULT_MAX_MESSAGES.
+        let mut chain = ChainKey::new([0x33u8; 32]);
+        let target = crate::ratchet::MAX_SKIPPED_MESSAGES as u64;
+        let mut derived = 0u64;
+        while derived < target {
+            assert!(chain.next_message_key().is_some(),
+                "default chain exhausted at {} (target {}) — SIBNA-2026-012 regression",
+                derived, target);
+            derived += 1;
+        }
+        assert_eq!(derived, target);
+
+        // After MAX_SKIPPED_MESSAGES, chain must still have headroom
+        // up to DEFAULT_MAX_MESSAGES. Verify it produces a few more.
+        for _ in 0..16 {
+            assert!(chain.next_message_key().is_some(),
+                "chain must have headroom past MAX_SKIPPED_MESSAGES");
+            derived += 1;
+        }
+        assert!(derived < ChainKey::DEFAULT_MAX_MESSAGES,
+            "derived {} should still be < DEFAULT_MAX_MESSAGES {}", derived, ChainKey::DEFAULT_MAX_MESSAGES);
+
+        // Finally, exhaust the chain fully and confirm exhaustion at the cap.
+        while derived < ChainKey::DEFAULT_MAX_MESSAGES {
+            assert!(chain.next_message_key().is_some());
+            derived += 1;
+        }
+        assert_eq!(derived, ChainKey::DEFAULT_MAX_MESSAGES);
+        assert!(chain.next_message_key().is_none(),
+            "chain must not produce a key at index == DEFAULT_MAX_MESSAGES");
     }
 }

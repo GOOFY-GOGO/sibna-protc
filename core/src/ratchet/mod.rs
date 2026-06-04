@@ -8,17 +8,23 @@ pub use chain::*;
 pub use state::*;
 pub use session::*;
 
-use x25519_dalek::{PublicKey, StaticSecret};
-use std::collections::HashMap;
 use crate::error::{ProtocolError, ProtocolResult};
-use crate::crypto::constant_time_eq;
 use serde::{Serialize, Deserialize};
 
 pub const MAX_SKIPPED_MESSAGES: usize = 2000;
 pub const MAX_MESSAGE_KEY_AGE_SECS: u64 = 86400;
 
-/// Wire layout: dh_public(32) || message_number(8) || previous_chain_length(8) || timestamp(8)
+/// Plaintext header size: dh_public(32) || message_number(8) || previous_chain_length(8) || timestamp(8)
 pub const HEADER_SIZE: usize = 56;
+
+/// Encrypted header nonce size (ChaCha20-Poly1305)
+pub const ENCRYPTED_HEADER_NONCE_SIZE: usize = 12;
+
+/// Encrypted header size: nonce(12) || encrypted_header(56) || poly1305_tag(16)
+pub const ENCRYPTED_HEADER_SIZE: usize = ENCRYPTED_HEADER_NONCE_SIZE + HEADER_SIZE + 16;
+
+/// Protocol version for v3.1 (header encryption enabled)
+pub const PROTOCOL_VERSION_V3_1: u32 = 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RatchetHeader {
@@ -70,6 +76,46 @@ impl RatchetHeader {
         }
         Ok(())
     }
+
+    /// Encrypt the header using a key derived from the chain key.
+    /// Wire format: nonce(12) || encrypted_header(56) || tag(16)
+    pub fn encrypt(&self, header_key: &[u8; 32]) -> ProtocolResult<Vec<u8>> {
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
+        use crate::crypto::SecureRandom;
+
+        let cipher = ChaCha20Poly1305::new(header_key.into());
+        let mut rng = SecureRandom::new().map_err(|_| ProtocolError::InternalError)?;
+        let mut nonce_bytes = [0u8; ENCRYPTED_HEADER_NONCE_SIZE];
+        rng.fill_bytes(&mut nonce_bytes);
+
+        let plaintext = self.to_bytes();
+        let encrypted = cipher.encrypt(&nonce_bytes.into(), plaintext.as_ref())
+            .map_err(|_| ProtocolError::EncryptionFailed)?;
+
+        let mut out = Vec::with_capacity(ENCRYPTED_HEADER_NONCE_SIZE + encrypted.len());
+        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(&encrypted);
+        Ok(out)
+    }
+
+    /// Decrypt an encrypted header using a key derived from the chain key.
+    /// Wire format: nonce(12) || encrypted_header(56) || tag(16)
+    pub fn decrypt(data: &[u8], header_key: &[u8; 32]) -> ProtocolResult<Self> {
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
+
+        if data.len() < ENCRYPTED_HEADER_NONCE_SIZE + 16 {
+            return Err(ProtocolError::InvalidMessage);
+        }
+
+        let cipher = ChaCha20Poly1305::new(header_key.into());
+        let nonce = &data[..ENCRYPTED_HEADER_NONCE_SIZE];
+        let ciphertext = &data[ENCRYPTED_HEADER_NONCE_SIZE..];
+
+        let plaintext = cipher.decrypt(nonce.into(), ciphertext)
+            .map_err(|_| ProtocolError::DecryptionFailed)?;
+
+        Self::from_bytes(&plaintext)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -102,12 +148,23 @@ pub struct RatchetMessage {
 }
 
 impl RatchetMessage {
+    /// Serialize to wire format (plaintext header, for backward compatibility).
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = self.header.to_bytes();
         out.extend_from_slice(&self.ciphertext);
         out
     }
 
+    /// Serialize to wire format with encrypted header (v3.1+).
+    /// Wire format: encrypted_header(84) || ciphertext(...)
+    pub fn to_bytes_encrypted(&self, header_key: &[u8; 32]) -> ProtocolResult<Vec<u8>> {
+        let encrypted_header = self.header.encrypt(header_key)?;
+        let mut out = encrypted_header;
+        out.extend_from_slice(&self.ciphertext);
+        Ok(out)
+    }
+
+    /// Deserialize from wire format (plaintext header, for backward compatibility).
     pub fn from_bytes(data: &[u8]) -> ProtocolResult<Self> {
         if data.len() < HEADER_SIZE + 29 {
             return Err(ProtocolError::InvalidMessage);
@@ -116,6 +173,23 @@ impl RatchetMessage {
             header:     RatchetHeader::from_bytes(&data[..HEADER_SIZE])?,
             ciphertext: data[HEADER_SIZE..].to_vec(),
         })
+    }
+
+    /// Deserialize from wire format with encrypted header (v3.1+).
+    /// Wire format: encrypted_header(84) || ciphertext(...)
+    pub fn from_bytes_encrypted(data: &[u8], header_key: &[u8; 32]) -> ProtocolResult<Self> {
+        if data.len() < ENCRYPTED_HEADER_SIZE + 29 {
+            return Err(ProtocolError::InvalidMessage);
+        }
+        let header = RatchetHeader::decrypt(&data[..ENCRYPTED_HEADER_SIZE], header_key)?;
+        let ciphertext = data[ENCRYPTED_HEADER_SIZE..].to_vec();
+        Ok(Self { header, ciphertext })
+    }
+
+    /// Check if a message starts with an encrypted header (magic bytes heuristic).
+    /// Encrypted headers have random nonce bytes; we use the minimum length check.
+    pub fn is_encrypted_header(data: &[u8]) -> bool {
+        data.len() >= ENCRYPTED_HEADER_SIZE + 29
     }
 
     pub fn size(&self) -> usize { HEADER_SIZE + self.ciphertext.len() }
@@ -133,4 +207,30 @@ pub struct RatchetStateSummary {
 pub struct StateSummary {
     pub sending_index: u64,
     pub skipped_keys: usize,
+}
+
+// Compatibility re-export: the rich StateSummary (in state.rs) carries the
+// fields session.rs needs. This alias keeps callers using `super::StateSummary`
+// working while pointing at the same type.
+pub use state::StateSummary as StateSummaryDetail;
+
+/// Tunable ratchet-level parameters. Currently a thin shim; future fields
+/// (DH rotation interval, max chain length, etc.) will land here.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RatchetConfig {
+    pub max_skipped_messages: usize,
+    pub message_key_max_age_secs: u64,
+    pub max_chain_messages: u64,
+}
+
+impl Default for RatchetConfig {
+    fn default() -> Self {
+        Self {
+            max_skipped_messages: MAX_SKIPPED_MESSAGES,
+            message_key_max_age_secs: MAX_MESSAGE_KEY_AGE_SECS,
+            // Must be >= MAX_SKIPPED_MESSAGES so an adversary cannot force a
+            // chain to exhaust before the skipped-key window closes.
+            max_chain_messages: (MAX_SKIPPED_MESSAGES as u64) * 2,
+        }
+    }
 }

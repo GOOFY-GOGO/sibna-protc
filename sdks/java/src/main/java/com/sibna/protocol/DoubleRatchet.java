@@ -85,6 +85,10 @@ public class DoubleRatchet implements AutoCloseable {
     public byte[] encrypt(byte[] plaintext) throws CryptoException {
         ensureOpen();
 
+        if (plaintext == null || plaintext.length == 0) {
+            throw new CryptoException("Plaintext cannot be empty");
+        }
+
         // Step 1: KDF ratchet step on sending chain
         byte[][] kdfOutput = kdfRatchetStep(sendingChainKey);
         byte[] messageKey = kdfOutput[0];
@@ -241,11 +245,93 @@ public class DoubleRatchet implements AutoCloseable {
         return sb.toString();
     }
 
+    /**
+     * Session statistics.
+     */
+    public static class Stats {
+        public final int messagesSent;
+        public final int messagesReceived;
+
+        public Stats(int sent, int received) {
+            this.messagesSent = sent;
+            this.messagesReceived = received;
+        }
+    }
+
+    public Stats getStats() {
+        return new Stats(sendingMessageNumber, receivingMessageNumber);
+    }
+
+    /**
+     * Serialize the current state to bytes.
+     */
+    public byte[] serialize() throws CryptoException {
+        ensureOpen();
+        // Format: version(4) || root(32) || sendKey(32) || sendIdx(4) || recvKey(32) || recvIdx(4) || remoteDH(32) || prevCounter(4)
+        int size = 4 + 32 + 32 + 4 + 32 + 4 + 32 + 4;
+        byte[] out = new byte[size];
+        int offset = 0;
+
+        // Version (simple placeholder)
+        out[offset++] = 1; out[offset++] = 0; out[offset++] = 0; out[offset++] = 0;
+        
+        System.arraycopy(rootChainKey, 0, out, offset, 32); offset += 32;
+        System.arraycopy(sendingChainKey, 0, out, offset, 32); offset += 32;
+        
+        out[offset++] = (byte)(sendingMessageNumber >> 24);
+        out[offset++] = (byte)(sendingMessageNumber >> 16);
+        out[offset++] = (byte)(sendingMessageNumber >> 8);
+        out[offset++] = (byte)sendingMessageNumber;
+        
+        System.arraycopy(receivingChainKey, 0, out, offset, 32); offset += 32;
+        
+        out[offset++] = (byte)(receivingMessageNumber >> 24);
+        out[offset++] = (byte)(receivingMessageNumber >> 16);
+        out[offset++] = (byte)(receivingMessageNumber >> 8);
+        out[offset++] = (byte)receivingMessageNumber;
+        
+        byte[] remoteDH = (remoteDHRatchetKey != null) ? remoteDHRatchetKey : new byte[32];
+        System.arraycopy(remoteDH, 0, out, offset, 32); offset += 32;
+        
+        // Placeholder for previous counter
+        out[offset++] = 0; out[offset++] = 0; out[offset++] = 0; out[offset++] = 0;
+        
+        return out;
+    }
+
+    /**
+     * Restore state from bytes.
+     */
+    public static DoubleRatchet deserialize(CryptoProvider crypto, byte[] data) throws CryptoException {
+        if (data.length < 128) throw new CryptoException("Serialized state too short");
+        
+        int offset = 4; // skip version
+        byte[] root = Arrays.copyOfRange(data, offset, offset + 32); offset += 32;
+        byte[] sendKey = Arrays.copyOfRange(data, offset, offset + 32); offset += 32;
+        int sendIdx = ((data[offset] & 0xFF) << 24) | ((data[offset+1] & 0xFF) << 16) | ((data[offset+2] & 0xFF) << 8) | (data[offset+3] & 0xFF);
+        offset += 4;
+        byte[] recvKey = Arrays.copyOfRange(data, offset, offset + 32); offset += 32;
+        int recvIdx = ((data[offset] & 0xFF) << 24) | ((data[offset+1] & 0xFF) << 16) | ((data[offset+2] & 0xFF) << 8) | (data[offset+3] & 0xFF);
+        offset += 4;
+        byte[] remoteDH = Arrays.copyOfRange(data, offset, offset + 32);
+        
+        DoubleRatchet dr = new DoubleRatchet(crypto, new byte[32], true); // Dummy init
+        dr.rootChainKey = root;
+        dr.sendingChainKey = sendKey;
+        dr.sendingMessageNumber = sendIdx;
+        dr.receivingChainKey = recvKey;
+        dr.receivingMessageNumber = recvIdx;
+        dr.remoteDHRatchetKey = remoteDH;
+        
+        return dr;
+    }
+
     private void ensureOpen() throws CryptoException {
         if (closed) {
             throw new CryptoException("DoubleRatchet is closed");
         }
     }
+
 
     @Override
     public void close() {

@@ -41,7 +41,7 @@ Example (async WebSocket):
     asyncio.run(main())
 """
 
-__version__ = "3.0.0"
+__version__ = "3.0.1"
 __author__ = "Sibna Security Team"
 __license__ = "Apache-2.0 OR MIT"
 
@@ -170,27 +170,54 @@ PADDING_BLOCK = 1024
 
 def pad_payload(data: bytes) -> bytes:
     """
-    Pad payload to nearest 1024-byte boundary (metadata resistance).
-    Makes all messages look the same size to a passive observer.
+    Pad payload to 1024-byte block boundary with metadata resistance.
+
+    Wire format (matches Rust core):
+      [ prefix_len(1) | prefix_noise(1-8) | plaintext | random_padding | padding_len(2, LE) ]
+
+    Total output is always a multiple of PADDING_BLOCK.
     """
-    unpadded_len = len(data) + 1
-    remainder = unpadded_len % PADDING_BLOCK
-    padding_needed = (PADDING_BLOCK - remainder) % PADDING_BLOCK
-    if padding_needed == 0:
-        padding_needed = PADDING_BLOCK  # Always pad at least 1 byte
-    indicator = padding_needed % 256
-    padding = secrets.token_bytes(padding_needed)
-    return bytes([indicator]) + data + padding
+    prefix_len = secrets.randbelow(8) + 1
+    prefix_noise = secrets.token_bytes(prefix_len)
+
+    min_total = 1 + prefix_len + len(data) + 2
+    remainder = min_total % PADDING_BLOCK
+    min_pad_len = (PADDING_BLOCK - remainder) % PADDING_BLOCK
+
+    extra_blocks = secrets.randbelow(2)
+    pad_len = min_pad_len + extra_blocks * PADDING_BLOCK
+
+    return (
+        bytes([prefix_len])
+        + prefix_noise
+        + data
+        + secrets.token_bytes(pad_len)
+        + pad_len.to_bytes(2, 'little')
+    )
 
 def unpad_payload(padded: bytes) -> bytes:
     """Remove padding from a received payload."""
-    if not padded:
-        raise CryptoError("Empty payload")
-    indicator = padded[0]
-    padded_len = len(padded)
-    padding_needed = padded_len % PADDING_BLOCK
-    actual_padding = indicator if padding_needed == 0 else padding_needed
-    return padded[1 : padded_len - actual_padding]
+    if len(padded) < 4:
+        raise CryptoError("Payload too short to unpad")
+
+    total_len = len(padded)
+    pad_len = padded[total_len - 1] * 256 + padded[total_len - 2]
+    body_len = total_len - 2 - pad_len
+
+    if body_len < 1 or body_len > total_len:
+        raise CryptoError(f"Invalid padding: body_len({body_len}) out of range")
+
+    prefix_len = padded[0]
+    if prefix_len < 1 or prefix_len > 8:
+        raise CryptoError(f"Invalid prefix length: {prefix_len}")
+
+    data_start = 1 + prefix_len
+    data_end = data_start + (body_len - data_start)
+
+    if data_start > body_len or data_end > body_len:
+        raise CryptoError(f"Invalid padding layout: data_start({data_start}) > body_len({body_len})")
+
+    return padded[data_start:data_end]
 
 
 # ── Signed Envelope (End-to-End Integrity) ────────────────────────────────────

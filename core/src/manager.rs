@@ -5,17 +5,18 @@
 //!
 //! # Security Hardening Applied (v3.0.0 Fortress)
 //!
-//! | ID  | Severity | Description                                              |
-//! |-----|----------|----------------------------------------------------------|
-//! | F-01| CRITICAL | Race condition in discovery → DashMap entry API          |
-//! | F-02| CRITICAL | `unwrap_or_default()` on hex decode → ghost-peer DoS     |
-//! | F-03| HIGH     | No peer cap in `add_p2p_peer` → memory exhaustion DoS    |
-//! | F-04| HIGH     | `InternalErrorDetailed` leaks internal details to caller |
-//! | F-05| HIGH     | Discovery loop has no graceful shutdown/cancellation     |
-//! | F-06| MEDIUM   | No input size guard on `send_message`                    |
-//! | F-07| MEDIUM   | No peer-address validation before connecting             |
-//! | F-08| MEDIUM   | Cover-traffic delay uses uniform distribution            |
+//! | ID  | Severity | Description                                              | Status |
+//! |-----|----------|----------------------------------------------------------|--------|
+//! | F-01| CRITICAL | Race condition in discovery → DashMap entry API          | ✅     |
+//! | F-02| CRITICAL | `unwrap_or_default()` on hex decode → ghost-peer DoS     | ✅     |
+//! | F-03| HIGH     | No peer cap in `add_p2p_peer` → memory exhaustion DoS    | ✅     |
+//! | F-04| HIGH     | `InternalErrorDetailed` leaks internal details to caller | ✅     |
+//! | F-05| HIGH     | Discovery loop has no graceful shutdown/cancellation     | ✅     |
+//! | F-06| MEDIUM   | No input size guard on `send_message`                    | ✅     |
+//! | F-07| MEDIUM   | No peer-address validation before connecting             | ✅     |
+//! | F-08| MEDIUM   | Cover-traffic delay uses uniform distribution            | ✅     |
 //!
+//! All findings F-01 through F-08 have been resolved in v3.0.0.
 //! NOTE on original finding #3 (Signature Verification):
 //! The `is_dummy` field IS already included in `signing_payload()` in
 //! `metadata.rs` (line 121: `hasher.update(&[self.is_dummy as u8])`).
@@ -25,10 +26,15 @@ use crate::{SecureContext, ProtocolResult};
 use crate::error::ProtocolError;
 #[cfg(feature = "p2p")]
 use crate::p2p::{P2pNode, Peer};
+#[cfg(feature = "p2p")]
+use crate::transport::relay::RelayClient;
 use std::sync::Arc;
 #[cfg(feature = "p2p")]
 use dashmap::DashMap;
-use tracing::{info, warn, debug};
+use tracing::warn;
+#[cfg(feature = "p2p")]
+use tracing::{info, debug};
+#[cfg(feature = "p2p")]
 use rand::Rng;
 
 // ── Security constants ────────────────────────────────────────────────────────
@@ -51,6 +57,7 @@ const COVER_TRAFFIC_MEAN_SECS: f64 = 5.0;
 /// Manages hybrid communication (P2P + Relay)
 #[derive(Clone)]
 pub struct HybridRouter {
+    #[allow(dead_code)]
     ctx: SecureContext,
     #[cfg(feature = "p2p")]
     p2p_node: Option<Arc<P2pNode>>,
@@ -60,11 +67,14 @@ pub struct HybridRouter {
     /// Cancellation signal for the discovery background task. (FIX F-05)
     #[cfg(feature = "p2p")]
     discovery_cancel: Arc<tokio::sync::Notify>,
+    /// Relay client for server-mediated message delivery.
+    #[cfg(feature = "p2p")]
+    relay_client: Option<Arc<RelayClient>>,
 }
 
 impl HybridRouter {
     pub fn new(ctx: SecureContext) -> Self {
-        Self {
+        let router = Self {
             ctx,
             #[cfg(feature = "p2p")]
             p2p_node: None,
@@ -73,11 +83,34 @@ impl HybridRouter {
             cover_traffic_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(feature = "p2p")]
             discovery_cancel: Arc::new(tokio::sync::Notify::new()),
-        }
+            #[cfg(feature = "p2p")]
+            relay_client: None,
+        };
+
+        // Start automatic key rotation in background
+        #[cfg(feature = "p2p")]
+        router.start_rotation_loop();
+
+        router
     }
 
     pub fn set_cover_traffic(&self, enabled: bool) {
         self.cover_traffic_enabled.store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Set the relay client for server-mediated message delivery.
+    #[cfg(feature = "p2p")]
+    pub fn set_relay_client(&mut self, client: RelayClient) {
+        self.relay_client = Some(Arc::new(client));
+    }
+
+    /// Initialize the relay client from the context's config (relay_url + proxy_url).
+    #[cfg(feature = "p2p")]
+    pub fn init_relay_from_config(&mut self) -> ProtocolResult<()> {
+        let config = self.ctx.config();
+        let client = RelayClient::new(&config.relay_url, config.proxy_url.as_deref())?;
+        self.relay_client = Some(Arc::new(client));
+        Ok(())
     }
 
     #[cfg(feature = "p2p")]
@@ -127,7 +160,17 @@ impl HybridRouter {
             }
         }
 
-        self.send_via_relay(recipient_id, plaintext).await
+        #[cfg(feature = "p2p")]
+        {
+            self.send_via_relay(recipient_id, plaintext).await
+        }
+
+        #[cfg(not(feature = "p2p"))]
+        {
+            let _ = recipient_id;
+            warn!("RELAY_SEND_FAILED: relay requires p2p feature");
+            Err(ProtocolError::InvalidState)
+        }
     }
 
     pub async fn send_webrtc_signal(&self, recipient_id: &[u8], signal: crate::media::WebRtcSignal) -> ProtocolResult<()> {
@@ -157,6 +200,7 @@ impl HybridRouter {
         let router     = Arc::new(self.clone());
         let node_local = node.clone();
         let cancel     = self.discovery_cancel.clone();
+        let seen_sessions = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::<String>::new()));
 
         tokio::spawn(async move {
             loop {
@@ -173,59 +217,48 @@ impl HybridRouter {
                             None    => { info!("P2P discovery channel closed"); break; }
                         };
 
-                        // FIX F-02: validate hex before decode — no silent empty key
-                        let peer_id = match hex::decode(&discovered.peer_id_hex) {
-                            Ok(id) if !id.is_empty() => id,
-                            Ok(_) => {
-                                warn!("P2P_DISCOVERY: peer ID decodes to empty, dropping");
-                                continue;
-                            }
-                            Err(e) => {
-                                warn!("P2P_DISCOVERY: invalid peer ID hex '{}': {}", discovered.peer_id_hex, e);
-                                continue;
-                            }
-                        };
+                        // FIX SIBNA-2026-029: mDNS now broadcasts a random session
+                        // token, NOT the real peer ID. The real identity is only
+                        // revealed after the encrypted X3DH handshake completes.
+                        let session_token = &discovered.session_token;
 
                         // FIX F-07: validate address
                         if !is_valid_peer_addr(&discovered.addr) {
-                            warn!("P2P_DISCOVERY: invalid addr {} for peer {}, dropping", discovered.addr, hex::encode(&peer_id));
+                            warn!("P2P_DISCOVERY: invalid addr {} for session {}, dropping", discovered.addr, session_token);
                             continue;
                         }
 
                         // FIX F-03: enforce peer cap before attempting connect
                         if router.active_peers.len() >= MAX_ACTIVE_PEERS {
-                            warn!("P2P_PEER_CAP: {} peers reached, dropping {}", MAX_ACTIVE_PEERS, hex::encode(&peer_id));
+                            warn!("P2P_PEER_CAP: {} peers reached, dropping session {}", MAX_ACTIVE_PEERS, session_token);
                             continue;
                         }
 
-                        // FIX F-01: use DashMap entry API to close the TOCTOU window.
-                        // The vacant slot is dropped before the async connect so we
-                        // don't hold the shard lock across an await point.
-                        // We then use or_insert_with on re-entry to handle the rare
-                        // concurrent-connect race.
-                        use dashmap::mapref::entry::Entry;
-                        let already_present = matches!(
-                            router.active_peers.entry(peer_id.clone()),
-                            Entry::Occupied(_)
-                        );
-                        if already_present {
-                            debug!("P2P_DISCOVERY: peer {} already connected", hex::encode(&peer_id));
-                            continue;
+                        // Deduplicate by session token to avoid connecting to the
+                        // same mDNS advertiser twice within one session.
+                        {
+                            let mut seen = seen_sessions.lock().await;
+                            if !seen.insert(session_token.clone()) {
+                                debug!("P2P_DISCOVERY: session {} already seen, skipping", session_token);
+                                continue;
+                            }
                         }
 
                         match node_local.connect(&discovered.addr.to_string()).await {
                             Ok(peer) => {
-                                // Idempotent: or_insert_with only inserts if still absent
+                                // After the handshake the real peer ID is known.
+                                // Insert into active_peers keyed by the long-term identity.
+                                let real_peer_id = peer.peer_id().to_vec();
                                 router.active_peers
-                                    .entry(peer_id.clone())
+                                    .entry(real_peer_id.clone())
                                     .or_insert_with(|| {
-                                        info!("P2P_CONNECTED: peer={} addr={}", hex::encode(&peer_id), discovered.addr);
+                                        info!("P2P_CONNECTED: peer={} addr={}", hex::encode(&real_peer_id), discovered.addr);
                                         Arc::new(peer)
                                     });
                             }
                             Err(e) => {
                                 // FIX F-04: log details but don't propagate them upward
-                                warn!("P2P_CONNECT_FAILED: peer={} addr={} err={:?}", hex::encode(&peer_id), discovered.addr, e);
+                                warn!("P2P_CONNECT_FAILED: session={} addr={} err={:?}", session_token, discovered.addr, e);
                             }
                         }
                     }
@@ -237,20 +270,82 @@ impl HybridRouter {
         Ok(())
     }
 
+    #[cfg(feature = "p2p")]
+    pub fn start_rotation_loop(&self) {
+        let router = self.clone();
+        tokio::spawn(async move {
+            let interval = router.ctx.config().key_rotation_interval;
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval / 10));
+
+            loop {
+                ticker.tick().await;
+
+                let mut needs_rotation = false;
+                {
+                    let keystore = router.ctx.keystore();
+                    let ks = keystore.read();
+                    match ks.get_signed_prekey() {
+                        Ok(spk) if !spk.is_expired() => needs_rotation = false,
+                        _ => needs_rotation = true,
+                    }
+                }
+
+                if needs_rotation {
+                    info!("S_ROTATION: signed prekey expired or missing, rotating...");
+                    let keystore = router.ctx.keystore();
+                    let mut ks = keystore.write();
+                    if let Ok(new_pub) = ks.rotate_signed_prekey() {
+                        info!("S_ROTATION: rotated to new SPK: {}", hex::encode(new_pub));
+                        
+                        if let Some(ref _relay) = router.relay_client {
+                            // Pending optimization for relay bundle upload
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // ── Relay ─────────────────────────────────────────────────────────────────
 
+    #[cfg(feature = "p2p")]
     async fn send_via_relay(&self, recipient_id: &[u8], plaintext: &[u8]) -> ProtocolResult<()> {
         info!("RELAY_SEND: recipient={}", hex::encode(recipient_id));
 
+        let relay = self.relay_client.as_ref().ok_or_else(|| {
+            warn!("RELAY_SEND_FAILED: no relay client configured");
+            ProtocolError::InvalidState
+        })?;
+
         let ciphertext = self.ctx.encrypt_message(recipient_id, plaintext, None)
             .map_err(|e| {
-                // FIX F-04: internal detail stays in logs, not in the error value
                 warn!("RELAY_ENCRYPT_FAILED: {:?}", e);
                 ProtocolError::EncryptionFailed
             })?;
 
-        info!("RELAY_QUEUED: {} bytes", ciphertext.len());
-        Ok(())
+        let identity = self.ctx.get_identity().map_err(|e| {
+            warn!("RELAY_IDENTITY_ERR: {:?}", e);
+            ProtocolError::InternalError
+        })?;
+
+        let mut sig_env = crate::metadata::SignedEnvelope {
+            recipient_id:  hex::encode(recipient_id),
+            payload_hex:   hex::encode(ciphertext),
+            sender_id:     hex::encode(&identity.ed25519_public),
+            timestamp:     chrono::Utc::now().timestamp(),
+            message_id:    hex::encode(rand::thread_rng().gen::<[u8; 16]>()),
+            signature_hex: String::new(),
+            compressed:    false,
+            is_dummy:      false,
+        };
+
+        let payload = sig_env.signing_payload();
+        sig_env.signature_hex = hex::encode(identity.sign(&payload)?);
+
+        let envelope_json = serde_json::to_string(&sig_env)
+            .map_err(|_| ProtocolError::InvalidMessage)?;
+
+        relay.send_envelope(&envelope_json).await
     }
 
     // ── Peer management ───────────────────────────────────────────────────────
@@ -293,7 +388,18 @@ impl HybridRouter {
                     };
                     tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
 
-                    let dummy_id = [0u8; 32];
+                    // SECURITY: pick a random dummy peer ID. Hardcoding
+                    // [0u8; 32] is a fingerprint — a passive observer that sees
+                    // repeated cover traffic addressed to the same all-zero
+                    // recipient knows exactly which flows are dummy and can
+                    // filter them out, defeating the cover-traffic guarantee.
+                    let mut dummy_id = [0u8; 32];
+                    {
+                        let mut rng = rand::thread_rng();
+                        for b in dummy_id.iter_mut() {
+                            *b = rng.gen();
+                        }
+                    }
                     if let Err(e) = router.send_dummy_to_relay(&dummy_id) {
                         warn!("COVER_TRAFFIC_SEND_FAILED: {:?}", e);
                     }
@@ -302,9 +408,15 @@ impl HybridRouter {
         }
     }
 
+    #[cfg(feature = "p2p")]
     #[allow(dead_code)]
     fn send_dummy_to_relay(&self, recipient_id: &[u8]) -> ProtocolResult<()> {
         debug!("COVER_TRAFFIC_DUMMY: recipient={}", hex::encode(recipient_id));
+
+        let relay = self.relay_client.as_ref().ok_or_else(|| {
+            warn!("COVER_TRAFFIC_SEND_FAILED: no relay client configured");
+            ProtocolError::InvalidState
+        })?;
 
         let mut junk = vec![0u8; 64];
         rand::thread_rng().fill(&mut junk[..]);
@@ -312,7 +424,6 @@ impl HybridRouter {
         let ciphertext = self.ctx.encrypt_message(recipient_id, &junk, None)?;
 
         let identity = self.ctx.get_identity().map_err(|e| {
-            // FIX F-04: generic error returned, detail logged internally
             warn!("COVER_TRAFFIC_IDENTITY_ERR: {:?}", e);
             ProtocolError::InternalError
         })?;
@@ -334,10 +445,18 @@ impl HybridRouter {
         let payload = sig_env.signing_payload();
         sig_env.signature_hex = hex::encode(identity.sign(&payload)?);
 
-        let final_json = serde_json::to_string(&sig_env)
+        let envelope_json = serde_json::to_string(&sig_env)
             .map_err(|_| ProtocolError::InvalidMessage)?;
 
-        info!("COVER_TRAFFIC_SENT: {} bytes", final_json.len());
+        // Use tokio::spawn for async send from sync context
+        let relay_clone = relay.clone();
+        let json_clone = envelope_json;
+        tokio::spawn(async move {
+            if let Err(e) = relay_clone.send_envelope(&json_clone).await {
+                warn!("COVER_TRAFFIC_SEND_FAILED: {:?}", e);
+            }
+        });
+
         Ok(())
     }
 }

@@ -8,7 +8,6 @@ use crate::keystore::KeyStore;
 use crate::SessionManager;
 use crate::group::GroupManager;
 use serde::{Serialize, Deserialize};
-use subtle::ConstantTimeEq;
 
 
 /// Unified storage payload
@@ -26,6 +25,9 @@ pub struct StoragePayload {
     pub groups: GroupManager,
     /// Timestamp of last save
     pub last_save: u64,
+    /// Device ID — persisted so multi-device sync works across restarts.
+    /// Without this, every loaded context would appear as device 0.
+    pub device_id: [u8; 16],
 }
 
 /// Sidecar file written alongside the encrypted blob.
@@ -64,6 +66,7 @@ impl SecureStorage {
         sessions: &SessionManager,
         groups: &GroupManager,
         sequence_number: u64,
+        device_id: [u8; 16],
     ) -> ProtocolResult<()> {
         let _lock_file = Self::_acquire_lock(path)?;
         use std::io::Write;
@@ -81,10 +84,11 @@ impl SecureStorage {
             sessions: sessions.clone(), // This is shallow clone for the maps
             groups: groups.clone(),
             last_save: now,
+            device_id,
         };
 
         // Serialize payload
-        let plaintext = bincode::encode_to_vec(&payload, bincode::config::legacy())
+        let plaintext = bincode::serde::encode_to_vec(&payload, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)?;
 
         // Encrypt payload
@@ -137,7 +141,7 @@ impl SecureStorage {
             blob_hash,
             manifest_mac,
         };
-        let manifest_bytes = bincode::encode_to_vec(&manifest, bincode::config::legacy())
+        let manifest_bytes = bincode::serde::encode_to_vec(&manifest, bincode::config::legacy())
             .map_err(|_| ProtocolError::SerializationError)?;
         
         let manifest_path = path.with_extension("manifest");
@@ -147,7 +151,7 @@ impl SecureStorage {
         std::fs::rename(&tmp_path, path)
             .map_err(|_| ProtocolError::StorageError)?;
 
-        Self::_release_lock(path);
+        // Lock released on return by `LockGuard::drop`.
         Ok(())
     }
 
@@ -160,14 +164,31 @@ impl SecureStorage {
         use std::io::Read;
         use crate::crypto::CryptoHandler;
 
-        // 1. Read Manifest if it exists 
+        // 1. Read Manifest if it exists.
+        // SECURITY: A missing manifest is treated as an attack indicator.
+        // If an attacker with filesystem write access can delete the manifest,
+        // they can also roll back the encrypted blob to a previous state —
+        // rollback protection depends on the manifest being present.
         let manifest_path = path.with_extension("manifest");
-        let manifest: Option<StorageManifest> = if manifest_path.exists() {
+        let manifest: StorageManifest = if manifest_path.exists() {
             let bytes = std::fs::read(&manifest_path)
                 .map_err(|_| ProtocolError::StorageError)?;
-            Some(bincode::decode_from_slice(&bytes, bincode::config::legacy()).map(|(v,_)|v).map_err(|_| ProtocolError::DeserializationError)?)
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v,_)|v)
+                .map_err(|_| ProtocolError::DeserializationError)?
         } else {
-            None
+            // Manifest missing: refuse to load. Callers who genuinely want to
+            // load a legacy (un-protected) file must do so explicitly via
+            // `load_context_legacy` (out of scope here). The default path
+            // must always be hardened.
+            tracing::error!(
+                "StorageManifest missing at {:?} — refusing to load. \
+                 This may indicate a rollback attack or filesystem corruption. \
+                 Do not delete the .manifest file unless you are prepared to \
+                 lose rollback protection.",
+                manifest_path
+            );
+            return Err(ProtocolError::StorageError);
         };
 
         // 2. Read Blob
@@ -193,69 +214,65 @@ impl SecureStorage {
         let handler = CryptoHandler::new(encryption_key)
             .map_err(|_| ProtocolError::InternalError)?;
         
-        // 3. Verify Manifest HMAC and Hash 
-        if let Some(ref m) = manifest {
-            // First: verify the manifest's own HMAC to prevent manifest replacement
-            use hmac::{Hmac, Mac};
-            use sha2::Sha256;
-            use subtle::ConstantTimeEq;
-            let mut mac_input = Vec::with_capacity(4 + 8 + 32);
-            mac_input.extend_from_slice(&m.version.to_le_bytes());
-            mac_input.extend_from_slice(&m.sequence_number.to_le_bytes());
-            mac_input.extend_from_slice(&m.blob_hash);
-            let mut hmac = <Hmac<Sha256>>::new_from_slice(encryption_key)
-                .expect("HMAC accepts any key length");
-            hmac.update(&mac_input);
-            let expected_mac: [u8; 32] = hmac.finalize().into_bytes().into();
+        // 3. Verify Manifest HMAC and Hash
+        // First: verify the manifest's own HMAC to prevent manifest replacement
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        use subtle::ConstantTimeEq;
+        let mut mac_input = Vec::with_capacity(4 + 8 + 32);
+        mac_input.extend_from_slice(&manifest.version.to_le_bytes());
+        mac_input.extend_from_slice(&manifest.sequence_number.to_le_bytes());
+        mac_input.extend_from_slice(&manifest.blob_hash);
+        let mut hmac = <Hmac<Sha256>>::new_from_slice(encryption_key)
+            .expect("HMAC accepts any key length");
+        hmac.update(&mac_input);
+        let expected_mac: [u8; 32] = hmac.finalize().into_bytes().into();
 
-            if m.manifest_mac.ct_eq(&expected_mac).unwrap_u8() == 0 {
-                // Manifest MAC mismatch: either the manifest was replaced (rollback attack)
-                // or it was created by an older version without HMAC.
-                // Reject to protect against rollback. Users with old manifests
-                // must delete the manifest file and re-save (losing rollback protection for one save).
-                tracing::error!(
-                    "StorageManifest HMAC verification failed — possible rollback attack or manifest from v3.0.0. \
-                     Delete the .manifest file to bypass (you lose rollback protection for this session)."
-                );
-                return Err(ProtocolError::StorageError);
-            }
+        if manifest.manifest_mac.ct_eq(&expected_mac).unwrap_u8() == 0 {
+            tracing::error!(
+                "StorageManifest HMAC verification failed — possible rollback attack. \
+                 Refusing to load."
+            );
+            return Err(ProtocolError::StorageError);
+        }
 
-            // Then: verify blob hash matches manifest
-            let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
-            sha2::Digest::update(&mut hasher, &encrypted);
-            let actual_hash: [u8; 32] = sha2::Digest::finalize(hasher).into();
+        // Then: verify blob hash matches manifest
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut hasher, &encrypted);
+        let actual_hash: [u8; 32] = sha2::Digest::finalize(hasher).into();
 
-            if m.blob_hash != actual_hash {
-                return Err(ProtocolError::StorageError); // Blob tampered
-            }
+        if manifest.blob_hash != actual_hash {
+            return Err(ProtocolError::StorageError); // Blob tampered
         }
 
         let plaintext = handler.decrypt(&encrypted, b"SibnaUnifiedStore_v1")
             .map_err(|_| ProtocolError::StorageError)?;
 
-        let payload: StoragePayload = bincode::decode_from_slice(&plaintext, bincode::config::legacy()).map(|(v,_)|v)
+        let payload: StoragePayload = bincode::serde::decode_from_slice(&plaintext, bincode::config::legacy()).map(|(v,_)|v)
             .map_err(|_| ProtocolError::DeserializationError)?;
 
         // 4. Verify Sequence Number (Rollback Protection) - v3.0.0
-        if let Some(ref m) = manifest {
-            if payload.sequence_number < m.sequence_number {
-                return Err(ProtocolError::StorageError); // Rollback detected
-            }
+        if payload.sequence_number < manifest.sequence_number {
+            return Err(ProtocolError::StorageError); // Rollback detected
         }
 
-        // Safety Jump for all sessions 
+        // Safety Jump for all sessions
         // no nonce reuse even after a crash
         for session_item in payload.sessions.iter() {
             session_item.value().read().jump_to_reservation()
                 .map_err(|_| ProtocolError::InternalError)?;
         }
 
-        Self::_release_lock(path);
+        // Lock released on return by `LockGuard::drop`.
         Ok((payload, salt))
     }
 
-    /// Internal: Acquire a simple lock file
-    fn _acquire_lock(path: &std::path::Path) -> ProtocolResult<std::fs::File> {
+    /// Internal: Acquire a simple lock file, returning a RAII guard.
+    ///
+    /// The lock is released on normal return, on error propagation, and on
+    /// panic — preventing a panic mid-write from leaving a stale `.lock`
+    /// file that blocks all subsequent writes until manually removed.
+    fn _acquire_lock(path: &std::path::Path) -> ProtocolResult<LockGuard> {
         let lock_path = path.with_extension("lock");
         let start = std::time::Instant::now();
         while start.elapsed().as_secs() < 30 {
@@ -264,7 +281,7 @@ impl SecureStorage {
                 .create_new(true)
                 .open(&lock_path)
             {
-                Ok(f) => return Ok(f),
+                Ok(f) => return Ok(LockGuard { path: lock_path, _file: f }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
@@ -273,10 +290,16 @@ impl SecureStorage {
         }
         Err(ProtocolError::Timeout) // Lock timeout
     }
+}
 
-    /// Internal: Release a simple lock file
-    fn _release_lock(path: &std::path::Path) {
-        let lock_path = path.with_extension("lock");
-        let _ = std::fs::remove_file(lock_path);
+/// RAII lock guard. Drop removes the lock file.
+struct LockGuard {
+    path: std::path::PathBuf,
+    _file: std::fs::File,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }

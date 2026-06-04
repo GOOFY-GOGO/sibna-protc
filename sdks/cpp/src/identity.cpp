@@ -2,6 +2,7 @@
 #include "sibna/crypto.hpp"
 #include <openssl/evp.h>
 #include <openssl/x25519.h>
+#include <openssl/rand.h>
 
 namespace sibna {
 
@@ -50,6 +51,15 @@ Result<IdentityKeyPair> IdentityKeyPair::generate() {
             "Failed to extract Ed25519 public key");
     }
 
+    // Extract private key (64 bytes for Ed25519: seed + public)
+    bytes ed25519_priv(64);
+    size_t priv_len = 64;
+    if (EVP_PKEY_get_raw_private_key(pkey, ed25519_priv.data(), &priv_len) != 1) {
+        EVP_PKEY_free(pkey);
+        return Result<IdentityKeyPair>(ResultCode::INTERNAL_ERROR, 
+            "Failed to extract Ed25519 private key");
+    }
+
     // For X25519, generate a separate keypair
     EVP_PKEY_CTX* x25519_ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_X25519, nullptr);
     if (!x25519_ctx) {
@@ -84,17 +94,80 @@ Result<IdentityKeyPair> IdentityKeyPair::generate() {
             "Failed to extract X25519 public key");
     }
 
+    // Extract X25519 private key
+    bytes x25519_priv(32);
+    size_t x25519_priv_len = 32;
+    if (EVP_PKEY_get_raw_private_key(x25519_pkey, x25519_priv.data(), &x25519_priv_len) != 1) {
+        EVP_PKEY_free(x25519_pkey);
+        EVP_PKEY_free(pkey);
+        return Result<IdentityKeyPair>(ResultCode::INTERNAL_ERROR, 
+            "Failed to extract X25519 private key");
+    }
+
     EVP_PKEY_free(x25519_pkey);
     EVP_PKEY_free(pkey);
 
-    return IdentityKeyPair(ed25519_pub, x25519_pub);
+    // Create identity with private keys
+    IdentityKeyPair identity(ed25519_pub, x25519_pub);
+    identity.ed25519_private_key_ = SecureBuffer(std::move(ed25519_priv));
+    identity.x25519_private_key_ = SecureBuffer(std::move(x25519_priv));
+
+    return identity;
 }
 
 Result<signature> IdentityKeyPair::sign(const bytes& data) const {
-    // Note: This requires the private key which we don't store in this class
-    // For a full implementation, store the private key in a SecureBuffer
-    return Result<signature>(ResultCode::INVALID_STATE, 
-        "Signing requires private key - use Crypto module directly");
+    if (ed25519_private_key_.empty()) {
+        return Result<signature>(ResultCode::INVALID_STATE, 
+            "Private key not available - use generate() to create identity");
+    }
+
+    // Create EVP_PKEY from private key
+    EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(
+        EVP_PKEY_ED25519, nullptr,
+        ed25519_private_key_.data(), ed25519_private_key_.size()
+    );
+    if (!pkey) {
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Failed to create private key");
+    }
+
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        EVP_PKEY_free(pkey);
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Failed to create sign context");
+    }
+
+    if (EVP_DigestSignInit(ctx, nullptr, nullptr, nullptr, pkey) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Failed to init sign");
+    }
+
+    // Get signature length
+    size_t sig_len = 0;
+    if (EVP_DigestSign(ctx, nullptr, &sig_len, data.data(), data.size()) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Failed to get signature length");
+    }
+
+    if (sig_len != SIGNATURE_LENGTH) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Unexpected signature length");
+    }
+
+    // Sign
+    signature sig;
+    if (EVP_DigestSign(ctx, sig.data(), &sig_len, data.data(), data.size()) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Failed to sign");
+    }
+
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+
+    return sig;
 }
 
 Result<bool> IdentityKeyPair::verify(const bytes& data, const signature& sig) const {
@@ -124,6 +197,11 @@ Result<bool> IdentityKeyPair::verify(const bytes& data, const signature& sig) co
     EVP_PKEY_free(pkey);
 
     return result == 1;
+}
+
+void IdentityKeyPair::clear_private_keys() {
+    ed25519_private_key_.clear();
+    x25519_private_key_.clear();
 }
 
 // ── PreKeyBundle ─────────────────────────────────────────────────────────────

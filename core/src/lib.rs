@@ -115,7 +115,7 @@ use x25519_dalek::PublicKey;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Protocol version number for compatibility
-pub const VERSION_NUMBER: u32 = 1;
+pub const VERSION_NUMBER: u32 = 10;
 
 /// Minimum compatible version
 pub const MIN_COMPATIBLE_VERSION: u32 = 1;
@@ -191,6 +191,9 @@ pub struct Config {
     pub proxy_url: Option<String>,
     /// Require out-of-band Safety Number verification before messaging (Defeats TOFU)
     pub require_safety_numbers: bool,
+    /// Enable header encryption for ratchet messages (v3.1)
+    /// When enabled, the DH public key and message number are encrypted on the wire.
+    pub enable_header_encryption: bool,
 }
 
 impl Default for Config {
@@ -214,6 +217,7 @@ impl Default for Config {
             relay_url: String::from("https://relay.sibna.dev"),
             proxy_url: None,
             require_safety_numbers: false,
+            enable_header_encryption: false,
         }
     }
 }
@@ -225,6 +229,7 @@ impl Config {
         Self {
             require_safety_numbers: true, // Defeat TOFU unconditionally
             proxy_url: None,              // Disable Tor surface area
+            enable_header_encryption: true, // Enable for maximum privacy
             ..Default::default()
         }
     }
@@ -298,16 +303,13 @@ impl SecureContext {
             }
             #[cfg(not(feature = "argon2"))]
             {
-                let salt = crypto::random_vec(32);
-                let mut salt_arr = [0u8; 32];
-                salt_arr.copy_from_slice(&salt);
-                let key = crypto::kdf::HkdfKdf::derive_iterated(
-                    password,
-                    &salt,
-                    b"SibnaStorageKey_v3",
-                    100_000,
-                )?;
-                (key, salt_arr)
+                // SECURITY: We deliberately do NOT use HKDF-iterated as a
+                // password KDF. HKDF is a fast PRF, which makes it GPU-
+                // brute-forceable (10^11 guesses/sec on a single high-end
+                // GPU). A password-protected context without Argon2id is
+                // unsafe. Refuse to start instead.
+                let _ = password; // silence unused warning
+                return Err(ProtocolError::KeyDerivationFailed);
             }
         } else {
             (crypto::KeyGenerator::generate_key()?, [0u8; 32])
@@ -951,6 +953,7 @@ impl SecureContext {
             &*sessions,
             &*groups,
             seq + 1,
+            self.device_id,
         )
     }
 
@@ -966,18 +969,38 @@ impl SecureContext {
         let mut salt = [0u8; 32];
         file.read_exact(&mut salt).map_err(|_| ProtocolError::StorageError)?;
         
-        let storage_key = crypto::kdf::HkdfKdf::derive_iterated(
-            password,
-            &salt,
-            b"SibnaStorageKey_v3",
-            100_000,
-        )?;
+        let storage_key = {
+            #[cfg(feature = "argon2")]
+            {
+                use argon2::Argon2;
+                let mut key_bytes = [0u8; 32];
+                let params = argon2::Params::new(
+                    argon2::Params::DEFAULT_M_COST,
+                    argon2::Params::DEFAULT_T_COST,
+                    argon2::Params::DEFAULT_P_COST,
+                    Some(32),
+                ).map_err(|_| ProtocolError::KeyDerivationFailed)?;
+                let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+                argon2.hash_password_into(password, &salt, &mut key_bytes)
+                    .map_err(|_| ProtocolError::KeyDerivationFailed)?;
+                zeroize::Zeroizing::new(key_bytes)
+            }
+            #[cfg(not(feature = "argon2"))]
+            {
+                // Same as `SecureContext::new`: refuse weak KDF.
+                let _ = (password, salt);
+                return Err(ProtocolError::KeyDerivationFailed);
+            }
+        };
 
         let (payload, _) = crate::storage::SecureStorage::load_context(path, &*storage_key)?;
         
         let config = payload.sessions._config.clone();
+        // Restore the device ID that was saved with the context. Loading
+        // a context with an all-zero device ID would break multi-device
+        // sync (every loaded context would look like device 0).
         let mut device_id = [0u8; 16];
-        device_id.copy_from_slice(&[0u8; 16]); 
+        device_id.copy_from_slice(&payload.device_id);
 
         Ok(Self {
             keystore: Arc::new(RwLock::new(payload.keystore)),

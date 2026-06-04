@@ -18,16 +18,20 @@
 //!   - Hybrid rate limiting (IP + Identity)
 //!   - Bundle replay protection (bundle_id dedup)
 //!   - Sealed Sender (server never sees sender)
-//!   - Offline message queue (7-day TTL, sled)
+//!   - Offline message queue (7-day TTL, redb)
 //!   - Zero-Reuse prekey compaction
 
 mod auth;
+mod db;
 mod ws;
+
+use db::DbState;
 
 use axum::{
     extract::{Path, State, ConnectInfo, FromRef},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
@@ -52,20 +56,12 @@ pub struct AppState {
     pub rt: Arc<RuntimeState>,
 }
 
-pub struct DbState {
-    pub sled: sled::Db,
-    pub tree_prekeys: sled::Tree,
-    pub tree_dedup: sled::Tree,
-    pub tree_queue: sled::Tree,
-    pub tree_challenges: sled::Tree,
-}
-
 pub struct RuntimeState {
     pub limiter: Arc<RateLimiter>,
     /// Connected WebSocket clients: identity_key_hex → sender channel
     pub clients: DashMap<String, ws::ClientTx>,
     /// JWT signing secret — zeroized on drop to prevent secret leakage in core dumps
-    /    pub jwt_secret: zeroize::Zeroizing<String>,
+    pub jwt_secret: zeroize::Zeroizing<String>,
 }
 
 /// Centralized Auth Extractor — ensures MUST-BE-AUTHENTICATED for protected routes.
@@ -100,6 +96,7 @@ where
 // Entry point
 
 #[tokio::main]
+#[allow(dead_code)]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse().unwrap_or(8080);
@@ -115,14 +112,8 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
     let db_path = db_path_override.unwrap_or_else(|| {
         std::env::var("SIBNA_DB_PATH").unwrap_or_else(|_| "sibna_server_db".to_string())
     });
-    let db = sled::open(&db_path)?;
-    eprintln!("DEBUG: Sled opened at {}", db_path);
-
-    // OPEN TREES ONCE - Performance & Integrity Fix
-    let tree_prekeys = db.open_tree("prekeys")?;
-    let tree_dedup = db.open_tree("msg_dedup")?;
-    let tree_queue = db.open_tree("msg_queue")?;
-    let tree_challenges = db.open_tree("auth_challenges")?;
+    let db_state = Arc::new(db::open_db(&db_path)?);
+    eprintln!("DEBUG: redb opened at {}", db_path);
 
     // JWT secret
     // : In production, a missing JWT secret is a fatal misconfiguration.
@@ -179,19 +170,26 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
         burst_size: 100,
     };
     
+    // Strict pre-auth IP-only rate limit. This bucket is consumed by the
+    // `ip_rate_limit` middleware on every /v1/* request before the
+    // AuthUser extractor runs. Burst of 50 requests, sustained 50/sec,
+    // so legitimate bursts pass but a 1000-req flood is rate-limited
+    // within the first 50-100 requests.
+    let ip_unauth_limit = sibna_core::rate_limit::OperationLimit {
+        max_per_second: 50,
+        max_per_minute: 200,
+        max_per_hour: 5_000,
+        max_per_day: 20_000,
+        cooldown: Duration::from_millis(500),
+        burst_size: 50,
+    };
+    limiter.add_limit("ip_unauth".to_string(), ip_unauth_limit);
+    
     limiter.add_limit("prekey_upload".to_string(), prekey_limit.clone());
     limiter.add_limit("prekey_fetch".to_string(), prekey_limit.clone());
     limiter.add_limit("auth_challenge".to_string(), prekey_limit.clone());
     limiter.add_limit("auth_prove".to_string(), prekey_limit.clone());
     limiter.add_limit("message_send".to_string(), prekey_limit);
-
-    let db_state = Arc::new(DbState {
-        sled: db,
-        tree_prekeys,
-        tree_dedup,
-        tree_queue,
-        tree_challenges,
-    });
 
     let rt_state = Arc::new(RuntimeState {
         limiter: Arc::new(limiter),
@@ -204,16 +202,29 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
         rt: rt_state,
     };
 
-    let app = Router::new()
-        .route("/health", get(health_handler))
+    // Sub-router for endpoints that need IP-only rate limiting BEFORE
+    // the AuthUser extractor runs. This is the DoS shield: an attacker
+    // can flood these endpoints with unauthenticated requests and the
+    // rate limit fires before auth is attempted.
+    //
+    // Endpoints NOT in this sub-router (`/v1/messages/send`,
+    // `/v1/messages/inbox`) have handler-level rate limits that operate
+    // on `claims.sub` (i.e., per authenticated user) and rely on the
+    // AuthUser extractor to reject unauthenticated requests with 401.
+    let protected = Router::new()
         .route("/v1/auth/challenge", post(auth::challenge_handler))
         .route("/v1/auth/prove", post(auth::prove_handler))
         .route("/v1/prekeys/upload", post(upload_prekey_handler))
         .route("/v1/prekeys/:user_id", get(fetch_prekey_handler))
         .route("/v1/prekeys/:user_id", delete(delete_prekey_handler))
+        .layer(middleware::from_fn_with_state(state.clone(), ip_rate_limit));
+
+    let app = Router::new()
+        .route("/health", get(health_handler))
         .route("/v1/messages/send", post(send_message_handler))
         .route("/v1/messages/inbox", get(inbox_handler))
         .route("/ws", get(ws::ws_handler))
+        .merge(protected)
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(21 * 1024 * 1024)) // 21 MB to allow for large-test payloads
         .layer(CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any))
@@ -230,12 +241,11 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
                 let cutoff = chrono::Utc::now().timestamp() - 48 * 3600;
                 let mut to_delete = Vec::new();
                 for item in tree.iter() {
-                    if let Ok((key, value)) = item {
-                        if value.len() == 8 {
-                            let mut b = [0u8; 8];
-                            b.copy_from_slice(&value);
-                            if i64::from_be_bytes(b) < cutoff { to_delete.push(key); }
-                        }
+                    let (key, value): (Vec<u8>, Vec<u8>) = item;
+                    if value.len() == 8 {
+                        let mut b = [0u8; 8];
+                        b.copy_from_slice(&value);
+                        if i64::from_be_bytes(b) < cutoff { to_delete.push(key); }
                     }
                 }
                 for key in to_delete { tree.remove(key).ok(); }
@@ -246,8 +256,8 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
     info!("Sibna Server listening on {}", addr);
 
     // : Graceful shutdown on SIGTERM/SIGINT.
-    // an abrupt kill can corrupt sled's append-only log (torn writes),
-    // leave .tmp atomic-write files, and interrupt in-flight WebSocket sessions.
+    // redb commits each transaction immediately, so no explicit flush is
+    // required on shutdown — the database is always in a consistent state.
     let db_for_shutdown = state.db.clone();
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
@@ -269,12 +279,9 @@ pub async fn run_server(listener: tokio::net::TcpListener, db_path_override: Opt
                     .expect("failed to register Ctrl-C handler");
                 info!("Ctrl-C received — starting graceful shutdown");
             }
-            // Flush sled to disk before exit to prevent log corruption
-            if let Err(e) = db_for_shutdown.sled.flush_async().await {
-                tracing::error!("sled flush failed during shutdown: {:?}", e);
-            } else {
-                info!("sled flushed successfully");
-            }
+            // redb commits on every write-transaction; no flush needed
+            drop(db_for_shutdown);
+            info!("Database handle dropped — shutdown complete");
         })
         .await?;
     Ok(())
@@ -303,6 +310,34 @@ fn enforce_rate_limit(
         return Err((StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response());
     }
     Ok(())
+}
+
+/// IP-only rate limit middleware that runs BEFORE the AuthUser extractor.
+/// This prevents unauthenticated DoS attacks (e.g., flooding
+/// `/v1/prekeys/upload` with garbage to fill redb).
+///
+/// The middleware reads the client IP from the `ConnectInfo<SocketAddr>`
+/// extension (set by `into_make_service_with_connect_info`) and applies
+/// the rate limit keyed only by IP. Per-identity rate limits are still
+/// applied inside the handler after auth succeeds.
+async fn ip_rate_limit(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    // Apply the strict pre-auth IP rate limit. The bucket is keyed by
+    // IP only (no identity since auth has not happened yet). This is
+    // a coarse DoS shield; per-operation, per-identity limits are
+    // applied inside the handler after auth succeeds.
+    let addr = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0)
+        .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+    if let Err(r) = enforce_rate_limit(&state.rt.limiter, "ip_unauth", &addr, "ip_only") {
+        return r;
+    }
+    next.run(request).await
 }
 
 fn random_bytes_32() -> [u8; 32] {
@@ -366,6 +401,7 @@ async fn upload_prekey_handler(
         return r;
     }
     if let Ok(Some(existing)) = state.db.tree_prekeys.get(&db_key) {
+        let existing: Vec<u8> = existing;
         if let Ok(existing_bundle) = sibna_core::handshake::PreKeyBundle::from_bytes(&existing) {
             if bundle.bundle_id == existing_bundle.bundle_id {
                 return (StatusCode::CONFLICT, "Replay attack detected: bundle_id reused").into_response();
@@ -403,24 +439,23 @@ async fn fetch_prekey_handler(
     let mut keys_to_delete = Vec::new();
 
     // 1. Try fetching standard One-Time Prekeys
-    for item in state.db.tree_prekeys.scan_prefix(prefix.as_bytes()) {
-        if let Ok((key, bundle_bytes)) = item {
-            if let Ok(bundle) = sibna_core::handshake::PreKeyBundle::from_bytes(&bundle_bytes) {
-                if bundle.validate().is_ok() {
-                    fetched_bundles_hex.push(hex::encode(&*bundle_bytes));
-                }
+    for (key, bundle_bytes) in state.db.tree_prekeys.scan_prefix(prefix.as_bytes()) {
+        if let Ok(bundle) = sibna_core::handshake::PreKeyBundle::from_bytes(&bundle_bytes) {
+            if bundle.validate().is_ok() {
+                fetched_bundles_hex.push(hex::encode(&bundle_bytes));
             }
-            keys_to_delete.push(key);
         }
+        keys_to_delete.push(key);
     }
 
     // 2. PILLAR 2: If no one-time keys are available, fallback to Last Resort Key
     let mut using_resort = false;
     if fetched_bundles_hex.is_empty() {
         if let Ok(Some(resort_bytes)) = state.db.tree_prekeys.get(resort_key.as_bytes()) {
+            let resort_bytes: Vec<u8> = resort_bytes;
             if let Ok(bundle) = sibna_core::handshake::PreKeyBundle::from_bytes(&resort_bytes) {
                 if bundle.validate().is_ok() {
-                    fetched_bundles_hex.push(hex::encode(&*resort_bytes));
+                    fetched_bundles_hex.push(hex::encode(&resort_bytes));
                     using_resort = true;
                     info!("WARN: PreKey starvation for {} — using Last Resort Key!", &root_id[..16]);
                     // We DO NOT add it to keys_to_delete. It persists forever.
@@ -459,11 +494,9 @@ async fn delete_prekey_handler(
 
     let prefix = format!("{}:", root_id);
     let mut deleted = false;
-    for item in state.db.tree_prekeys.scan_prefix(prefix.as_bytes()) {
-        if let Ok((key, _)) = item {
-            if state.db.tree_prekeys.remove(key).unwrap_or_default().is_some() {
-                deleted = true;
-            }
+    for (key, _) in state.db.tree_prekeys.scan_prefix(prefix.as_bytes()) {
+        if state.db.tree_prekeys.remove(key).unwrap_or_default().is_some() {
+            deleted = true;
         }
     }
     if deleted {
@@ -556,17 +589,15 @@ async fn inbox_handler(
     let mut messages = Vec::new();
     let mut to_delete = Vec::new();
 
-    for item in state.db.tree_queue.scan_prefix(prefix.as_bytes()) {
-        if let Ok((key, value)) = item {
-            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&value) {
-                let expires = json["expires"].as_i64().unwrap_or(0);
-                if now > expires {
-                    to_delete.push(key);
-                    continue;
-                }
-                messages.push(json["envelope"].clone());
+    for (key, value) in state.db.tree_queue.scan_prefix(prefix.as_bytes()) {
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&value) {
+            let expires = json["expires"].as_i64().unwrap_or(0);
+            if now > expires {
                 to_delete.push(key);
+                continue;
             }
+            messages.push(json["envelope"].clone());
+            to_delete.push(key);
         }
     }
 

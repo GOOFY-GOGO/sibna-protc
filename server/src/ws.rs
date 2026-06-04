@@ -2,7 +2,7 @@
 //!
 //! The server is a pure relay: it NEVER sees plaintext. It routes sealed
 //! envelopes between connected clients. Disconnected recipients get messages
-//! queued in sled with a 7-day TTL.
+//! queued in redb with a 7-day TTL.
 
 use axum::{
     extract::{State, WebSocketUpgrade, Query},
@@ -195,6 +195,7 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
     // Validate message_id (dedup) — with INLINE TTL eviction for expired entries.
     let dedup_key = format!("dedup:{}", envelope.message_id);
     if let Ok(Some(existing)) = state.db.tree_dedup.get(dedup_key.as_bytes()) {
+        let existing: Vec<u8> = existing;
         let is_expired = if existing.len() == 8 {
             let mut b = [0u8; 8];
             b.copy_from_slice(&existing);
@@ -302,7 +303,7 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
     }
 }
 
-/// Store message in offline queue (sled tree: "msg_queue:{recipient_id}:{msg_id}")
+/// Store message in offline queue (redb table: "queue:{recipient_id}:{msg_id}")
 async fn queue_message(state: &AppState, envelope: &SealedEnvelope) {
     let db_key = format!("queue:{}:{}", envelope.recipient_id, envelope.message_id);
     let ttl_cutoff = chrono::Utc::now().timestamp() + 7 * 86400;
@@ -323,32 +324,30 @@ async fn deliver_queued_messages(state: &AppState, identity_id: &str, tx: &Clien
     let now = chrono::Utc::now().timestamp();
     let mut to_delete = Vec::new();
 
-    for item in state.db.tree_queue.scan_prefix(prefix.as_bytes()) {
-        if let Ok((key, value)) = item {
-            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&value) {
-                let expires = json["expires"].as_i64().unwrap_or(0);
-                if now > expires {
-                    // Expired — mark for deletion
-                    to_delete.push(key);
-                    continue;
+    for (key, value) in state.db.tree_queue.scan_prefix(prefix.as_bytes()) {
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&value) {
+            let expires = json["expires"].as_i64().unwrap_or(0);
+            if now > expires {
+                // Expired — mark for deletion
+                to_delete.push(key);
+                continue;
+            }
+            if let Some(env_val) = json.get("envelope") {
+                if let Ok(envelope) = serde_json::from_value::<SealedEnvelope>(env_val.clone()) {
+                    match serde_json::to_vec(&WsMessage::Envelope(envelope)) {
+                        Ok(data) => { tx.send(data).ok(); }
+                        Err(e) => { warn!("WS_DELIVER: failed to serialise queued envelope: {}", e); }
+                    }
+                    // PILLAR 1: DO NOT mark for deletion! Waiting for explicit client ACK.
                 }
-                if let Some(env_val) = json.get("envelope") {
-                    if let Ok(envelope) = serde_json::from_value::<SealedEnvelope>(env_val.clone()) {
-                        match serde_json::to_vec(&WsMessage::Envelope(envelope)) {
-                            Ok(data) => { tx.send(data).ok(); }
-                            Err(e) => { warn!("WS_DELIVER: failed to serialise queued envelope: {}", e); }
-                        }
-                        // PILLAR 1: DO NOT mark for deletion! Waiting for explicit client ACK.
+            } else if let Some(sig_val) = json.get("signal") {
+                if let Ok(signal) = serde_json::from_value::<WebRtcSignal>(sig_val.clone()) {
+                    match serde_json::to_vec(&WsMessage::WebRtc(signal)) {
+                        Ok(data) => { tx.send(data).ok(); }
+                        Err(e) => { warn!("WS_DELIVER: failed to serialise queued signal: {}", e); }
                     }
-                } else if let Some(sig_val) = json.get("signal") {
-                    if let Ok(signal) = serde_json::from_value::<WebRtcSignal>(sig_val.clone()) {
-                        match serde_json::to_vec(&WsMessage::WebRtc(signal)) {
-                            Ok(data) => { tx.send(data).ok(); }
-                            Err(e) => { warn!("WS_DELIVER: failed to serialise queued signal: {}", e); }
-                        }
-                        // WebRTC signals are ephemeral — safe to delete upon delivery attempt to prevent ghost ringing.
-                        to_delete.push(key);
-                    }
+                    // WebRTC signals are ephemeral — safe to delete upon delivery attempt to prevent ghost ringing.
+                    to_delete.push(key);
                 }
             }
         }

@@ -91,16 +91,21 @@ chain_key[n+1]  = HMAC-SHA256(chain_key[n], 0x02)
 Wire layout (all fields little-endian):
 
 ```
-dh_public(32) || message_number(8) || previous_chain_length(8) || timestamp(8)
+nonce(12) || encrypted_header(56) || ciphertext(...)
 ```
 
-Header encryption is not implemented in v3.0.x (planned for v3.1). The DH public key and message number are transmitted in plaintext.
+The header is encrypted using a key derived from the sending chain key via `HMAC-SHA256(chain_key, 0x03)`. The plaintext header contains:
+
+```
+dh_public(32) || message_number(8) || previous_chain_length(8) || timestamp(8)
+```
 
 **Validation rules:**
 
 - `dh_public` MUST NOT be all zeros.
 - `message_number` MUST be ≤ 1 000 000 000 000.
 - `timestamp` MUST be within [now − 86400s, now + 300s]. `timestamp == 0` is rejected.
+- Header key is derived from the sending chain key using `HMAC-SHA256(chain_key, 0x03)`.
 
 ### 3.4 Skipped Message Keys
 
@@ -109,6 +114,27 @@ Up to `MAX_SKIPPED_MESSAGES = 2000` out-of-order message keys are cached. Each e
 ### 3.5 DH Key Persistence
 
 The X25519 ratchet private scalar is never written to disk. `dh_local_serde` serializes `None` unconditionally. After a load, `dh_local` is `None`; the next outgoing ratchet step generates a fresh pair automatically.
+
+### 3.6 Cover Traffic
+
+Cover traffic provides traffic analysis resistance by sending encrypted dummy packets at exponentially distributed intervals (Poisson process). The mean delay is 5 seconds.
+
+**Properties:**
+
+- Dummy packets are encrypted with the same Double Ratchet as real messages.
+- The recipient silently ignores packets that decrypt to empty plaintext.
+- Each dummy packet is addressed to a random 32-byte recipient ID to prevent fingerprinting.
+- The `is_dummy` field is included in the envelope signature to prevent forgery.
+- Inter-packet delays follow an exponential distribution with configurable mean.
+
+### 3.7 Key Rotation
+
+Signed PreKeys (SPK) are rotated automatically based on `key_rotation_interval` (default: 86400 seconds / 24 hours). The rotation mechanism:
+
+1. The keystore checks SPK age on each encrypt operation.
+2. If age exceeds `key_rotation_interval`, a new SPK is generated and signed with the identity key.
+3. The new SPK is uploaded to the relay server.
+4. One-Time PreKeys (OPKs) are replenished when the count falls below a threshold.
 
 ---
 
@@ -199,8 +225,8 @@ On load, the HMAC is verified before the blob hash. A mismatch either indicates 
 | `MAX_PASSWORD_LEN` | 256 bytes |
 | `MAX_SKIPPED_MESSAGES` | 2 000 |
 | `MAX_MESSAGE_AGE_SECS` | 86 400 |
-| `PROTOCOL_VERSION` (wire) | 9 |
-| `MIN_COMPATIBLE_VERSION` | 8 |
+| `PROTOCOL_VERSION` (wire) | 10 |
+| `MIN_COMPATIBLE_VERSION` | 9 |
 
 ---
 
@@ -218,8 +244,6 @@ On load, the HMAC is verified before the blob hash. A mismatch either indicates 
 ---
 
 ## 10. Known Limitations
-
-**Header encryption.** The DH public key and message number are transmitted in plaintext. A passive observer can correlate messages within a session and observe ratchet epoch transitions. Scheduled for v3.1.
 
 **Software-only key storage.** Forward secrecy holds at the protocol layer. Key material on disk is protected by Argon2id + ChaCha20-Poly1305, but an attacker with persistent read access to the filesystem before key deletion can recover past material.
 
@@ -251,4 +275,4 @@ On load, the HMAC is verified before the blob hash. A mismatch either indicates 
 | Post-Compromise Security | Full | DH ratchet round-trips |
 | Identity Hiding | Partial | Relay sees sender for routing |
 | Traffic Anonymity | Optional | SOCKS5/Tor via `P2pConfig::proxy` |
-| Message Unlinkability | Partial | Limited by plaintext headers |
+| Message Unlinkability | Full | Header encryption prevents session correlation |

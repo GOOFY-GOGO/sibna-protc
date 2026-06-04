@@ -22,7 +22,7 @@
  *   await client.sendMessage({ recipientId: '...', payloadHex: '...' });
  */
 
-export const VERSION = '3.0.0'; // FIX: was '2.0.0' — must match protocol version
+export const VERSION = '3.0.1'; // FIX: was '2.0.0' — must match protocol version
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -76,41 +76,81 @@ const PADDING_BLOCK = 1024;
 // ── Message Padding ───────────────────────────────────────────────────────────
 
 /**
- * Pad payload to nearest 1024-byte boundary.
- * Protects against size-based traffic correlation attacks.
+ * Pad payload to 1024-byte block boundary with metadata resistance.
+ *
+ * Wire format (matches Rust core):
+ *   [ prefix_len(1) | prefix_noise(1-8) | plaintext | random_padding | padding_len(2, LE) ]
+ *
+ * Total output is always a multiple of PADDING_BLOCK.
  */
 export function padPayload(data: Uint8Array): Uint8Array {
-  const unpadded = data.length + 1;
-  const remainder = unpadded % PADDING_BLOCK;
-  let paddingNeeded = remainder === 0 ? PADDING_BLOCK : PADDING_BLOCK - remainder;
-  const indicator = paddingNeeded % 256;
-  const padding = crypto.getRandomValues(new Uint8Array(paddingNeeded));
-  return concat(new Uint8Array([indicator]), data, padding);
+  // 1. Random prefix noise (1-8 bytes) for length-hiding
+  const prefixLen = 1 + Math.floor(Math.random() * 8);
+  const prefixNoise = crypto.getRandomValues(new Uint8Array(prefixLen));
+
+  const block = PADDING_BLOCK;
+  const minTotal = 1 + prefixLen + data.length + 2; // indicator + prefix + data + 2-byte len
+  const remainder = minTotal % block;
+  const minPadLen = remainder === 0 ? 0 : block - remainder;
+
+  // 2. Add 0..1 extra blocks of random padding for size indistinguishability
+  const extraBlocks = Math.floor(Math.random() * 2);
+  const padLen = minPadLen + extraBlocks * block;
+
+  const total = minTotal + padLen;
+  const out = new Uint8Array(total);
+  let offset = 0;
+
+  // prefix_len byte
+  out[offset++] = prefixLen;
+  // prefix noise
+  out.set(prefixNoise, offset); offset += prefixLen;
+  // plaintext
+  out.set(data, offset); offset += data.length;
+  // random padding
+  if (padLen > 0) {
+    const randPad = crypto.getRandomValues(new Uint8Array(padLen));
+    out.set(randPad, offset); offset += padLen;
+  }
+  // 2-byte LE padding length
+  out[offset++] = padLen & 0xFF;
+  out[offset++] = (padLen >> 8) & 0xFF;
+
+  return out;
 }
 
 /**
  * Remove padding from a received payload.
  *
- * FIX: Old logic used `padded_len % PADDING_BLOCK` to determine actualPadding,
- * which is wrong for messages that are already aligned (remainder=0 — the
- * indicator byte must be used). Also added bounds check to prevent
- * out-of-bounds slice on malformed input.
+ * Reads the 2-byte LE padding length from the trailing bytes,
+ * then the 1-byte prefix length from the header to recover plaintext.
  */
 export function unpadPayload(padded: Uint8Array): Uint8Array {
-  if (padded.length < 2) throw new CryptoError('Payload too short to unpad');
-  const indicator = padded[0];
-  const body_len = padded.length - 1; // exclude the leading indicator byte
+  if (padded.length < 4) throw new CryptoError('Payload too short to unpad');
 
-  // The indicator encodes: paddingNeeded % 256
-  // When paddingNeeded == 256 (full block), indicator == 0
-  const actualPadding = indicator === 0 ? PADDING_BLOCK : indicator;
+  const totalLen = padded.length;
+  // Read 2-byte LE padding length from the end
+  const padLen = padded[totalLen - 1] * 256 + padded[totalLen - 2];
+  const bodyLen = totalLen - 2 - padLen; // everything before padding + trailing len
 
-  if (actualPadding > body_len) {
-    throw new CryptoError(`Invalid padding: actualPadding(${actualPadding}) > body_len(${body_len})`);
+  if (bodyLen < 1 || bodyLen > totalLen) {
+    throw new CryptoError(`Invalid padding: bodyLen(${bodyLen}) out of range`);
   }
 
-  // slice(1) skips indicator, then remove trailing padding bytes
-  return padded.slice(1, padded.length - actualPadding);
+  // Read prefix_len from first byte
+  const prefixLen = padded[0];
+  if (prefixLen < 1 || prefixLen > 8) {
+    throw new CryptoError(`Invalid prefix length: ${prefixLen}`);
+  }
+
+  const dataStart = 1 + prefixLen;
+  const dataEnd = dataStart + (bodyLen - dataStart);
+
+  if (dataStart > bodyLen || dataEnd > bodyLen) {
+    throw new CryptoError(`Invalid padding layout: dataStart(${dataStart}) > bodyLen(${bodyLen})`);
+  }
+
+  return padded.slice(dataStart, dataEnd);
 }
 
 // ── Identity ─────────────────────────────────────────────────────────────────
@@ -146,7 +186,7 @@ export async function generateIdentity(): Promise<IdentityKeys> {
 export async function signData(privateKey: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
   // Try @noble/ed25519 first (more reliable)
   try {
-    const { signAsync, getPublicKeyAsync } = await import('@noble/ed25519');
+    const { signAsync } = await import('@noble/ed25519');
     return await signAsync(data, privateKey);
   } catch {
     // Fallback to WebCrypto - need to derive public key from private key

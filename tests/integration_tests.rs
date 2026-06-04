@@ -398,15 +398,40 @@ async fn test_p2p_local_connect_and_handshake() {
     use sibna_core::p2p::{P2pNode, P2pConfig};
     use sibna_core::{SecureContext, Config};
 
+    // SIBNA-2026-037: P2P local connect now round-trips when both sides
+    // pin `expected_peer_identity` (SIBNA-2026-020 enforcement).
+    //
+    // The transcript binding is sound (see `x3dh_initiator_v3` and
+    // `x3dh_responder_v3` in `core/src/handshake/x3dh.rs`, plus the
+    // P2P transcript in `core/src/p2p/handshake.rs::transcript_hash`).
+    // The P2P Hello ephemeral is in the external binding; the X3DH
+    // ephemeral is in the internal binding; HKDF-Extract(salt=external,
+    // ikm=internal) cryptographically couples them. An attacker cannot
+    // swap the X3DH envelope without also being able to substitute the
+    // P2P Hello ephemeral, which is detected by the identity pin.
+    //
+    // The original (warn-only) path was the only path that round-tripped
+    // before, but it left MITM protection disabled by default. This test
+    // is the correct usage pattern: peers pre-exchange identities (e.g.,
+    // via safety number QR code) and pin them before connecting.
+
     // Node A (Initiator)
     let ctx_a = SecureContext::new(Config::default(), None).unwrap();
     ctx_a.generate_identity().unwrap();
-    let node_a = P2pNode::new(P2pConfig::default(), ctx_a).await.unwrap();
+    let id_a = ctx_a.get_identity().unwrap().ed25519_public;
 
-    // Node B (Responder)
+    // Node B (Responder) — generate FIRST so Alice can pin Bob's id.
     let ctx_b = SecureContext::new(Config::default(), None).unwrap();
     ctx_b.generate_identity().unwrap();
-    let node_b = P2pNode::new(P2pConfig::default(), ctx_b).await.unwrap();
+    let id_b = ctx_b.get_identity().unwrap().ed25519_public;
+
+    let mut cfg_a = P2pConfig::default();
+    cfg_a.expected_peer_identity = Some(id_b);
+    let node_a = P2pNode::new(cfg_a, ctx_a).await.unwrap();
+
+    let mut cfg_b = P2pConfig::default();
+    cfg_b.expected_peer_identity = Some(id_a);
+    let node_b = P2pNode::new(cfg_b, ctx_b).await.unwrap();
     let addr_b = node_b.local_addr();
 
     // Run connection asynchronously
@@ -494,6 +519,7 @@ async fn test_hybrid_routing_fallback() {
     // Setup Alice
     let ctx_a = SecureContext::new(Config::default(), None).unwrap();
     ctx_a.generate_identity().unwrap();
+    let id_a = ctx_a.get_identity().unwrap().ed25519_public;
     let mut router = HybridRouter::new(ctx_a.clone());
 
     // Setup Bob's ID
@@ -506,14 +532,27 @@ async fn test_hybrid_routing_fallback() {
     assert!(res.is_err(), "Expected SessionNotFound error for relay path without session");
 
     // 2. Setup P2P and send via Direct
-    let node_a = P2pNode::new(P2pConfig::default(), ctx_a).await.unwrap();
+    // After SIBNA-2026-020 fix, P2P requires `expected_peer_identity` to be set.
+    // Alice must know Bob's Ed25519 key out-of-band (e.g., via safety number exchange).
+    // We forward-declare id_b_mock here so Alice's config can pin Bob's identity
+    // *before* the mock node is created.
+    let ctx_b_mock = SecureContext::new(Config::default(), None).unwrap();
+    ctx_b_mock.generate_identity().unwrap();
+    let id_b_mock = ctx_b_mock.get_identity().unwrap().ed25519_public;
+
+    let mut cfg_a = P2pConfig::default();
+    cfg_a.expected_peer_identity = Some(id_b_mock);
+    let node_a = P2pNode::new(cfg_a, ctx_a).await.unwrap();
     router.set_p2p_node(node_a);
     
     // We mock a P2P session by manually establishing one
-    let ctx_b_mock = SecureContext::new(Config::default(), None).unwrap();
-    ctx_b_mock.generate_identity().unwrap();
-    let node_b = P2pNode::new(P2pConfig::default(), ctx_b_mock).await.unwrap();
+    let mut cfg_b_mock = P2pConfig::default();
+    cfg_b_mock.expected_peer_identity = Some(id_a);
+    let node_b = P2pNode::new(cfg_b_mock, ctx_b_mock).await.unwrap();
     let addr_b = node_b.local_addr();
+
+    // Note: Bob's P2P listener uses id_b_mock, NOT id_b. The earlier
+    // id_b is used only for the relay-fallback test.
 
     // Start Bob's listener
     let _b_task = tokio::spawn(async move {
@@ -546,11 +585,17 @@ async fn test_p2p_pq_handshake_hybrid() {
     let ctx_b = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
     ctx_b.generate_identity().unwrap();
 
-    let _alice_id = ctx_a.get_identity().unwrap().ed25519_public;
+    let alice_id = ctx_a.get_identity().unwrap().ed25519_public;
     let bob_id = ctx_b.get_identity().unwrap().ed25519_public;
 
-    let node_a = P2pNode::new(P2pConfig::default(), ctx_a).await.unwrap();
-    let node_b = P2pNode::new(P2pConfig::default(), ctx_b).await.unwrap();
+    // After SIBNA-2026-020 fix, P2P requires `expected_peer_identity`.
+    let mut cfg_a = P2pConfig::default();
+    cfg_a.expected_peer_identity = Some(bob_id);
+    let mut cfg_b = P2pConfig::default();
+    cfg_b.expected_peer_identity = Some(alice_id);
+
+    let node_a = P2pNode::new(cfg_a, ctx_a).await.unwrap();
+    let node_b = P2pNode::new(cfg_b, ctx_b).await.unwrap();
 
     let addr_b = node_b.local_addr();
 

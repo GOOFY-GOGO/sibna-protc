@@ -15,12 +15,42 @@ import java.util.Base64;
 
 /**
  * HTTP transport for communicating with the Sibna Protocol server.
+ * Includes TLS certificate pinning for security.
  */
 public class HttpTransport {
     private final String baseUrl;
+    private final SSLContext sslContext;
 
     public HttpTransport(String baseUrl) {
+        this(baseUrl, null);
+    }
+
+    /**
+     * Create HTTP transport with optional certificate pinning.
+     * @param baseUrl Server URL
+     * @param pinnedCertPem PEM-encoded certificate to pin (null to skip pinning)
+     */
+    public HttpTransport(String baseUrl, String pinnedCertPem) {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        this.sslContext = createSslContext(pinnedCertPem);
+    }
+
+    private SSLContext createSslContext(String pinnedCertPem) {
+        try {
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            
+            if (pinnedCertPem != null && !pinnedCertPem.isEmpty()) {
+                // Certificate pinning mode - trust only the pinned cert
+                ctx.init(null, new TrustManager[]{new PinningTrustManager(pinnedCertPem)}, new java.security.SecureRandom());
+            } else {
+                // Default trust manager (validates against system trust store)
+                ctx.init(null, null, new java.security.SecureRandom());
+            }
+            
+            return ctx;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create SSL context", e);
+        }
     }
 
     /**
@@ -238,5 +268,46 @@ public class HttpTransport {
                                  + Character.digit(hex.charAt(i + 1), 16));
         }
         return data;
+    }
+
+    /**
+     * Trust manager that only trusts a pinned certificate.
+     */
+    private static class PinningTrustManager implements X509TrustManager {
+        private final X509Certificate pinnedCert;
+
+        PinningTrustManager(String pinnedCertPem) {
+            try {
+                String cleanPem = pinnedCertPem
+                    .replace("-----BEGIN CERTIFICATE-----", "")
+                    .replace("-----END CERTIFICATE-----", "")
+                    .replaceAll("\\s", "");
+                byte[] certBytes = Base64.getDecoder().decode(cleanPem);
+                java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+                this.pinnedCert = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certBytes));
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to parse pinned certificate", e);
+            }
+        }
+
+        @Override
+        public void checkClientTrusted(X509Certificate[] chain, String authType) {
+            throw new SecurityException("Client certificates not supported");
+        }
+
+        @Override
+        public void checkServerTrusted(X509Certificate[] chain, String authType) {
+            for (X509Certificate cert : chain) {
+                if (cert.equals(pinnedCert)) {
+                    return; // Trust the pinned cert
+                }
+            }
+            throw new SecurityException("Server certificate not pinned");
+        }
+
+        @Override
+        public X509Certificate[] getAcceptedIssuers() {
+            return new X509Certificate[]{pinnedCert};
+        }
     }
 }

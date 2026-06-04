@@ -155,6 +155,7 @@ pub fn x3dh_initiator_v3(
     //      which is still a secure PRF operation — the output is indistinguishable
     //      from random given a secure internal hash. When ext is non-zero (P2P flow),
     //      it provides genuine transcript binding.
+    #[allow(unused_variables)]
     let combined_transcript: [u8; 32] = {
         use hkdf::Hkdf;
         use sha2::Sha256;
@@ -193,7 +194,7 @@ pub fn x3dh_initiator_v3(
             dh3.as_bytes(),
             dh4.as_ref().map(|d| d.as_bytes()),
             &ss_bytes,
-            &transcript_hash,
+            &combined_transcript,
         )?;
         
         (derived, Some(SerDes::into_bytes(ct).to_vec()))
@@ -203,7 +204,7 @@ pub fn x3dh_initiator_v3(
             dh2.as_bytes(),
             dh3.as_bytes(),
             dh4.as_ref().map(|d| d.as_bytes()),
-            &transcript_hash,
+            &combined_transcript,
         )?;
         (derived, None)
     };
@@ -272,6 +273,13 @@ pub fn x3dh_responder_v3(
 
     // Derive transcript hash 
     // IMPORTANT: Only hash PUBLIC key material to ensure consistency and prevent leakage.
+    // Order MUST match x3dh_initiator_v3 exactly, otherwise the two sides derive
+    // different transcript hashes and (via HKDF) different shared secrets.
+    // The initiator's order is: [our_id, our_eph, peer_id, peer_spk, opt(peer_opk),
+    //                           our_device_id, peer_device_id].
+    // From the responder's perspective this is:
+    //   [peer_id, peer_eph, our_id, our_spk, opt(our_opk),
+    //    peer_device_id, our_device_id].
     let mut hasher = blake3::Hasher::new();
     hasher.update(peer_identity.as_bytes());
     hasher.update(peer_ephemeral.as_bytes());
@@ -280,11 +288,12 @@ pub fn x3dh_responder_v3(
     if let Some(prekey) = our_onetime_prekey {
         hasher.update(PublicKey::from(prekey).as_bytes());
     }
-    hasher.update(our_device_id);
     hasher.update(peer_device_id);
+    hasher.update(our_device_id);
     let transcript_hash: [u8; 32] = hasher.finalize().into();
 
     // HKDF-based transcript binding (same as initiator — see x3dh_initiator_v3)
+    #[allow(unused_variables)]
     let combined_transcript: [u8; 32] = {
         use hkdf::Hkdf;
         use sha2::Sha256;
@@ -327,7 +336,7 @@ pub fn x3dh_responder_v3(
             dh3.as_bytes(),
             dh4.as_ref().map(|d| d.as_bytes()),
             &ss_bytes,
-            &transcript_hash,
+            &combined_transcript,
         )?
     } else {
         X3dhKdf::derive_shared_secret(
@@ -335,7 +344,7 @@ pub fn x3dh_responder_v3(
             dh2.as_bytes(),
             dh3.as_bytes(),
             dh4.as_ref().map(|d| d.as_bytes()),
-            &transcript_hash,
+            &combined_transcript,
         )?
     };
 
@@ -577,5 +586,78 @@ mod tests {
 
         // Shared secrets should match
         assert!(verify_shared_secret(&result_a, &result_b));
+    }
+
+    // SIBNA-2026-037 regression test: existing X3DH unit tests use
+    // [0u8; 16] device IDs, which masks a transcript-hash asymmetry
+    // (initiator/responder hashed device IDs in opposite order, so
+    // the two sides computed different internal transcript hashes
+    // whenever device IDs differed). This test uses distinct, non-zero
+    // device IDs to ensure the two sides agree.
+    #[test]
+    fn test_x3dh_initiator_responder_distinct_device_ids() {
+        let a_identity = StaticSecret::random_from_rng(&mut OsRng);
+        let a_identity_public = PublicKey::from(&a_identity);
+        let a_ephemeral = StaticSecret::random_from_rng(&mut OsRng);
+        let a_ephemeral_public = PublicKey::from(&a_ephemeral);
+
+        let b_identity = StaticSecret::random_from_rng(&mut OsRng);
+        let b_identity_public = PublicKey::from(&b_identity);
+        let b_signed_prekey = StaticSecret::random_from_rng(&mut OsRng);
+        let b_signed_prekey_public = PublicKey::from(&b_signed_prekey);
+        let b_onetime_prekey = StaticSecret::random_from_rng(&mut OsRng);
+        let b_onetime_prekey_public = PublicKey::from(&b_onetime_prekey);
+
+        // Use distinct, non-zero device IDs and a non-zero transcript ext.
+        let dev_a: [u8; 16] = [
+            0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8,
+            0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB0,
+        ];
+        let dev_b: [u8; 16] = [
+            0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8,
+            0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0,
+        ];
+        let transcript_ext: [u8; 32] = [
+            0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
+            0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10,
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        ];
+
+        let result_a = x3dh_initiator_v3(
+            &a_identity,
+            &a_ephemeral,
+            &b_identity_public,
+            &b_signed_prekey_public,
+            Some(&b_onetime_prekey_public),
+            #[cfg(feature = "pqc")]
+            None,
+            &dev_a,
+            &dev_b,
+            &transcript_ext,
+        ).unwrap();
+
+        let result_b = x3dh_responder_v3(
+            &b_identity,
+            &b_signed_prekey,
+            Some(&b_onetime_prekey),
+            &a_identity_public,
+            &a_ephemeral_public,
+            #[cfg(feature = "pqc")]
+            None,
+            #[cfg(feature = "pqc")]
+            None,
+            &dev_b,
+            &dev_a,
+            &transcript_ext,
+        ).unwrap();
+
+        // The whole point: distinct non-zero device IDs should NOT
+        // cause the two sides to derive different shared secrets.
+        assert!(verify_shared_secret(&result_a, &result_b),
+            "X3DH shared secret mismatch with non-zero device IDs \
+             (SIBNA-2026-037 regression). initiator={} responder={}",
+            hex::encode(result_a.shared_secret),
+            hex::encode(result_b.shared_secret));
     }
 }

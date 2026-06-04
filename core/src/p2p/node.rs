@@ -157,7 +157,6 @@ impl P2pNode {
 
             Some(super::discovery::MdnsDiscovery::new(
                 discover_addr,
-                &identity.ed25519_public,
                 config.node_name.as_deref()
             )?)
         } else {
@@ -218,7 +217,12 @@ impl P2pNode {
 
     /// Dial `addr` and perform the P2P X3DH handshake as **initiator**.
     pub async fn connect(&self, addr: &str) -> P2pResult<Peer> {
-        let mut stream = transport::connect(addr, self.hs_cfg.max_frame_bytes).await?;
+        let mut stream = transport::connect_with_optional_proxy(
+            addr,
+            self.config.proxy.as_deref(),
+            false,
+            self.hs_cfg.max_frame_bytes,
+        ).await?;
         let remote_addr: SocketAddr = addr.parse()
             .map_err(|_| P2pError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput, "invalid address",

@@ -43,7 +43,7 @@ fn test_identity_pinning_and_mitm_rejection() {
     
     // 1. First contact: Alice presents her identity key. Protocol: TOFU.
     let alice_key_1 = [0xAAu8; 32];
-    let _ = ctx.perform_handshake(peer_id, HandshakeRole::Initiator, Some(&alice_key_1), None, None, None); 
+    let _ = ctx.perform_handshake(peer_id, HandshakeRole::Initiator, Some(&alice_key_1), None, None, None, None, None);
     
     // Fix: Bind the Arc to avoid "temporary value dropped while borrowed"
     let keystore_arc = ctx.keystore();

@@ -33,10 +33,15 @@ public:
     // Verify signature
     Result<bool> verify(const bytes& data, const signature& sig) const;
 
+    // Securely clear private keys
+    void clear_private_keys();
+
 private:
     std::array<byte, 32> ed25519_public_key_;
     std::array<byte, 32> x25519_public_key_;
     std::string fingerprint_;
+    SecureBuffer ed25519_private_key_;  // Ed25519 private key (64 bytes: seed + public)
+    SecureBuffer x25519_private_key_;   // X25519 private key (32 bytes)
 };
 
 // Prekey bundle for X3DH handshake

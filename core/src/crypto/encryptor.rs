@@ -2,13 +2,13 @@
 //!
 //! Provides high-level encryption with message numbers and replay protection.
 
-use super::{CryptoError, CryptoResult, SecureRandom, KEY_LENGTH, NONCE_LENGTH};
+use super::{CryptoError, CryptoResult, SecureRandom, SecureMemory, KEY_LENGTH, NONCE_LENGTH};
 use super::super::validation::{validate_message, validate_associated_data};
 use chacha20poly1305::{
     ChaCha20Poly1305, KeyInit,
     aead::Aead,
 };
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Message header size
 const MESSAGE_HEADER_SIZE: usize = 8 + 8 + 8; // message_number + timestamp + padding
@@ -31,8 +31,14 @@ pub struct Encryptor {
     cipher: ChaCha20Poly1305,
     /// Current message number
     message_number: u64,
-    /// Key (zeroized on drop)
-    _key: Zeroizing<[u8; KEY_LENGTH]>,
+    /// Key (zeroized and unlocked on drop).
+    ///
+    /// SIBNA-2026-017 (PATCH 21): switched from `Zeroizing<[u8; KEY_LENGTH]>`
+    /// to `SecureMemory`. On Windows the buffer is now pinned via
+    /// `VirtualLock`; on Unix via `mlock`. This prevents the key from
+    /// being swapped to disk where an attacker could recover it from
+    /// the page file or a hibernation dump.
+    _key: SecureMemory,
     /// Maximum message number seen (for replay detection)
     max_message_number: u64,
     /// Seen (message_number, timestamp) pairs — timestamp used for time-bounded eviction
@@ -52,15 +58,20 @@ impl Encryptor {
             return Err(CryptoError::InvalidKeyLength);
         }
 
-        let mut key_array = [0u8; KEY_LENGTH];
-        key_array.copy_from_slice(key);
-
-        let cipher = ChaCha20Poly1305::new(&key_array.into());
+        // SIBNA-2026-017: pin the key in physical RAM. The cipher
+        // instance is initialised from a transient copy; once the
+        // Encryptor is built, the long-lived `_key` field is the
+        // locked buffer.
+        let key_buf = SecureMemory::from_bytes(key);
+        let cipher = {
+            let view: &[u8] = key_buf.as_slice();
+            ChaCha20Poly1305::new(view.into())
+        };
 
         Ok(Self {
             cipher,
             message_number: initial_message_number,
-            _key: Zeroizing::new(key_array),
+            _key: key_buf,
             max_message_number: initial_message_number,
             seen_numbers: std::collections::HashMap::new(),
             max_seen_numbers: 1000,
