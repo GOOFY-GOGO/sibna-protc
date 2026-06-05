@@ -127,12 +127,12 @@ func UnpadPayload(padded []byte) ([]byte, error) {
 	// Read padding length from bytes 1-2 (big-endian)
 	paddingNeeded := int(padded[1])<<8 | int(padded[2])
 
-	paddedLen := len(padded)
-	if paddingNeeded >= paddedLen-3 {
+	// Validate: padded data must have at least 3 header bytes + padding
+	if paddingNeeded > len(padded)-3 {
 		return nil, errors.New("invalid padding")
 	}
 
-	return padded[3 : paddedLen-paddingNeeded], nil
+	return padded[3 : len(padded)-paddingNeeded], nil
 }
 
 // ── Signed Envelope ──────────────────────────────────────────────────────────
