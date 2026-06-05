@@ -1,4 +1,4 @@
-# Sibna Protocol v3.0.0 
+# Sibna Protocol v3.0.1 
 
 A high-security Rust implementation of the X3DH and Double Ratchet protocol — E2EE dual-licensed under Apache 2.0 / MIT.
 
@@ -9,7 +9,7 @@ A high-security Rust implementation of the X3DH and Double Ratchet protocol — 
 
 > [!IMPORTANT]
 > **Status: Security-Hardened Research Prototype (Pre-Audit)**.
-> Sibna v3.0.0 is an architectural implementation designed for high-assurance metadata resistance. It has been evaluated against timing side-channels via internal statistical benchmarking. A formal 3rd-party independent audit is targeted for Q3 2026.
+> Sibna v3.0.1 is an architectural implementation designed for high-assurance metadata resistance. It has been evaluated against timing side-channels via internal statistical benchmarking. A formal 3rd-party independent audit is targeted for Q3 2026.
 
 ---
 
@@ -38,7 +38,7 @@ A high-security Rust implementation of the X3DH and Double Ratchet protocol — 
 
 ```toml
 [dependencies]
-sibna-core = { version = "3.0.0", features = ["pqc", "p2p"] }
+sibna-core = { version = "3.0.1", features = ["pqc", "p2p"] }
 ```
 
 ```rust

@@ -1,4 +1,4 @@
-// Package sibna provides the Go SDK for the Sibna Protocol v3.0.0.
+// Package sibna provides the Go SDK for the Sibna Protocol v3.0.1.
 package sibna
 
 import (
@@ -144,7 +144,7 @@ func TestMakeSignedEnvelope(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	if Version != "3.0.0" {
-		t.Errorf("Version = %s, want 3.0.0", Version)
+	if Version != "3.0.1" {
+		t.Errorf("Version = %s, want 3.0.1", Version)
 	}
 }

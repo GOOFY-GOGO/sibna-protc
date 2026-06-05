@@ -14,7 +14,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Sibna Protocol Java SDK v3.0.0
+ * Sibna Protocol Java SDK v3.0.1
  *
  * Ultra-Secure Communication Protocol implementation with:
  * - Ed25519/X25519 identity keys

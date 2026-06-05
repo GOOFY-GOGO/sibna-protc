@@ -1,4 +1,4 @@
-// Package sibna provides the Go SDK for the Sibna Protocol v11.0.
+// Package sibna provides the Go SDK for the Sibna Protocol v3.0.1.
 //
 // Full HTTP + WebSocket client SDK with:
 //   - Ed25519 identity keys (using crypto/ed25519)
@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	Version      = "3.0.0"
+	Version      = "3.0.1"
 	PaddingBlock = 1024
 )
 

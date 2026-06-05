@@ -23,7 +23,7 @@ Java implementation of the Sibna Protocol for ultra-secure messaging.
 <dependency>
     <groupId>com.sibna</groupId>
     <artifactId>sibna-protocol</artifactId>
-    <version>3.0.0</version>
+    <version>3.0.1</version>
 </dependency>
 ```
 

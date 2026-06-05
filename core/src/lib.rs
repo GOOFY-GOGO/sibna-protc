@@ -1,4 +1,4 @@
-//! Sibna Protocol v3.0.0 "Fortress"
+//! Sibna Protocol v3.0.1 "Fortress"
 //!
 //! An independent Rust implementation of the Signal Protocol (X3DH + Double Ratchet)
 //! designed for integration into commercial and open-source applications.
@@ -35,7 +35,7 @@
 //! > the hybrid handshake protects against this, but the feature must remain enabled.
 //!
 //! # Version
-//! 3.0.0
+//! 3.0.1
 
 #![allow(missing_docs)]
 #![allow(unsafe_op_in_unsafe_fn)]

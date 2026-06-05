@@ -498,7 +498,10 @@ impl PreKeyBundle {
             return Err(ProtocolError::InvalidMessage);
         };
         #[cfg(not(feature = "pqc"))]
-        let (pq_signed_prekey, pq_signed_prekey_signature): (Option<Vec<u8>>, Option<[u8; 64]>) = (None, None);
+        let (pq_signed_prekey, pq_signed_prekey_signature): (
+            Option<Vec<u8>>,
+            Option<[u8; 64]>,
+        ) = (None, None);
 
         Ok(Self {
             identity_key,

@@ -11,9 +11,9 @@
 namespace sibna {
 
 // Version information
-constexpr uint32_t PROTOCOL_VERSION = 9;       // FIX: bumped for v3.0.0
-constexpr uint32_t MIN_COMPATIBLE_VERSION = 8;  // v2.x clients are not compatible
-constexpr const char* VERSION_STRING = "3.0.0"; // FIX: was "2.0.0"
+constexpr uint32_t PROTOCOL_VERSION = 10;       // FIX: bumped for v3.0.1
+constexpr uint32_t MIN_COMPATIBLE_VERSION = 9;  // v3.0.0 clients are not compatible
+constexpr const char* VERSION_STRING = "3.0.1"; // FIX: was "3.0.0"
 
 // Constants
 constexpr size_t KEY_LENGTH = 32;

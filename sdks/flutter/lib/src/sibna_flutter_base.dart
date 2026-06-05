@@ -1,7 +1,8 @@
 part of '../sibna_flutter.dart';
 
-const String sibnaVersion = '3.0.0';
-const int protocolVersion = 9;
+const String sibnaVersion = '3.0.1';
+const int protocolVersion = 10;
+const int minCompatibleVersion = 9;
 const int keyLength       = 32;
 const int nonceLength     = 12;
 const int tagLength       = 16;

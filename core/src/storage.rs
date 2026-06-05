@@ -251,7 +251,7 @@ impl SecureStorage {
                 .map(|(v, _)| v)
                 .map_err(|_| ProtocolError::DeserializationError)?;
 
-        // 4. Verify Sequence Number (Rollback Protection) - v3.0.0
+        // 4. Verify Sequence Number (Rollback Protection) - v3.0.1
         if payload.sequence_number < manifest.sequence_number {
             return Err(ProtocolError::StorageError); // Rollback detected
         }

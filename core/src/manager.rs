@@ -3,7 +3,7 @@
 //! The `HybridRouter` coordinates between P2P direct transport and
 //! Server-based relay transport. It implements a "P2P-first" policy.
 //!
-//! # Security Hardening Applied (v3.0.0 Fortress)
+//! # Security Hardening Applied (v3.0.1 Fortress)
 //!
 //! | ID  | Severity | Description                                              | Status |
 //! |-----|----------|----------------------------------------------------------|--------|
@@ -16,7 +16,7 @@
 //! | F-07| MEDIUM   | No peer-address validation before connecting             | ✅     |
 //! | F-08| MEDIUM   | Cover-traffic delay uses uniform distribution            | ✅     |
 //!
-//! All findings F-01 through F-08 have been resolved in v3.0.0.
+//! All findings F-01 through F-08 have been resolved in v3.0.1.
 //! NOTE on original finding #3 (Signature Verification):
 //! The `is_dummy` field IS already included in `signing_payload()` in
 //! `metadata.rs` (line 121: `hasher.update(&[self.is_dummy as u8])`).
@@ -299,10 +299,8 @@ impl HybridRouter {
                 {
                     let keystore = router.ctx.keystore();
                     let ks = keystore.read();
-                    needs_rotation = match ks.get_signed_prekey() {
-                        Ok(spk) if !spk.is_expired() => false,
-                        _ => true,
-                    };
+                    needs_rotation =
+                        !matches!(ks.get_signed_prekey(), Ok(spk) if !spk.is_expired());
                 }
 
                 if needs_rotation {

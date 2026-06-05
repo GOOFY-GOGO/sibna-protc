@@ -1,4 +1,4 @@
-//! Group Messaging (MLS-style) — Sibna Protocol v3.0.0
+//! Group Messaging (MLS-style) — Sibna Protocol v3.0.1
 //! Group Messaging - Sender Keys Implementation
 //!
 //! Implements the Sender Keys protocol for efficient group encryption.
