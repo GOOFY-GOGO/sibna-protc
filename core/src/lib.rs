@@ -39,6 +39,7 @@
 
 #![allow(missing_docs)]
 #![allow(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 #![allow(clippy::len_zero)]
@@ -992,6 +993,7 @@ impl SecureContext {
     }
 
     /// Load the entire context from disk.
+    #[allow(unreachable_code, unused_variables)]
     pub fn load_from_disk(path: &std::path::Path, password: &[u8]) -> ProtocolResult<Self> {
         // We use a dummy key first just to read the header/salt.
         // Or we can modify SecureStorage to return the salt *before* decryption.
@@ -1005,7 +1007,7 @@ impl SecureContext {
         file.read_exact(&mut salt)
             .map_err(|_| ProtocolError::StorageError)?;
 
-        let storage_key = {
+        let storage_key: zeroize::Zeroizing<[u8; 32]> = {
             #[cfg(feature = "argon2")]
             {
                 use argon2::Argon2;

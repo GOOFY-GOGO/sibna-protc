@@ -206,6 +206,7 @@ pub fn x3dh_initiator_v3(
         (derived, None)
     };
 
+    #[allow(unused_mut)]
     let mut result = X3dhResult::new(*shared_secret, dh_results);
     #[cfg(feature = "pqc")]
     if let Some(ct) = pq_ct {

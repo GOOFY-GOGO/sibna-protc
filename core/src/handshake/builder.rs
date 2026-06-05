@@ -320,6 +320,7 @@ impl X3dhHandshake {
         let ephemeral_public = PublicKey::from(&ephemeral_secret);
 
         // Perform X3DH initiator
+        #[allow(unused_mut)]
         let mut x3dh_result = x3dh_initiator_v3(
             our_identity
                 .x25519_secret
@@ -339,6 +340,7 @@ impl X3dhHandshake {
         // Build associated data
         let ad = self.build_associated_data(&our_identity.x25519_public, &peer_ik);
 
+        #[allow(unused_mut)]
         let mut output = HandshakeOutput::new(
             x3dh_result.shared_secret,
             ephemeral_secret,

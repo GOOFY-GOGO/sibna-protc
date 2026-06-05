@@ -396,6 +396,7 @@ impl PreKeyBundle {
     }
 
     /// Deserialize from bytes
+    #[allow(unused_variables, unused_assignments)]
     pub fn from_bytes(data: &[u8]) -> ProtocolResult<Self> {
         // Minimum non-PQC size: ik(32)+spk(32)+sig(64)+has_opk(1)+bundle_id(16)+ts(8)+exp(8)+dev_id(4)+root(32)+dev_sig(64)+bundle_sig(64) = 325 bytes
         if data.len() < 325 {
@@ -497,7 +498,7 @@ impl PreKeyBundle {
             return Err(ProtocolError::InvalidMessage);
         };
         #[cfg(not(feature = "pqc"))]
-        let (pq_signed_prekey, pq_signed_prekey_signature) = (None, None);
+        let (pq_signed_prekey, pq_signed_prekey_signature): (Option<Vec<u8>>, Option<[u8; 64]>) = (None, None);
 
         Ok(Self {
             identity_key,
