@@ -8,6 +8,10 @@ authors.workspace = true
 description = "Sibna Protocol Server"
 repository.workspace = true
 
+[lib]
+name = "sibna_server"
+path = "src/main.rs"
+
 [[bin]]
 name = "sibna-server"
 path = "src/main.rs"

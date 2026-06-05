@@ -105,6 +105,12 @@ impl ByteBuffer {
     }
 
     /// Free the buffer
+    ///
+    /// # Safety
+    /// This function must only be called with a valid pointer returned by this allocator.
+    /// The pointer must not be used after calling this function.
+    /// The pointer must not be freed twice.
+    /// The allocator must be the same one that allocated the buffer.
     pub unsafe fn free(&mut self) {
         if !self.data.is_null() {
             // Zeroize before freeing
