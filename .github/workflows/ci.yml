@@ -40,10 +40,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --lib
-      - run: cargo test --workspace --test integration_tests
+      - run: cargo test --workspace --test integration_tests -- --skip test_mdns_discovery
       - run: cargo test --workspace --test multi_device_tests
-      # mDNS requires multicast which is unavailable in CI — skip it
-      - run: cargo test --workspace --test integration -- --skip test_mdns_discovery
+      - run: cargo test --workspace --test integration
 
   test-attack:
     name: Security Audit Tests
