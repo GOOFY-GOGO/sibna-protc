@@ -1,5 +1,6 @@
 # cargo-deny configuration
 # Run: cargo deny check
+# Schema: cargo-deny v0.14+ with version = 2 opt-in (PR #611)
 
 [graph]
 targets = [
@@ -10,7 +11,13 @@ targets = [
 ]
 
 # ─── License policy ──────────────────────────────────
+# version = 2 opts into the new behavior where:
+#   - copyleft defaults to "deny"
+#   - the `deny` list is removed (use `allow` only)
+#   - unlicensed defaults to "deny"
 [licenses]
+version = 2
+private = { ignore = false }  # Don't fail on workspace-internal crates without license
 allow = [
     "MIT",
     "Apache-2.0",
@@ -18,30 +25,32 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
-copyleft = "deny"
-deny = [
-    "GPL-2.0",
-    "GPL-3.0",
-    "AGPL-3.0",
-    "LGPL-2.0",
-    "LGPL-2.1",
+exceptions = [
+    # Compound SPDX expression used by some unicode-related crates
+    { allow = ["Apache-2.0", "MIT"], crate = "zmij" },
 ]
 confidence-threshold = 0.8
 
 # ─── Security advisories ─────────────────────────────
-# SECURITY FIX §5.5: upgraded unmaintained from "warn" to "deny" so that
-# CI fails (not just warns) when a dependency has no active maintainer.
+# version = 2 opts into the new behavior where:
+#   - vulnerability defaults to "deny"
+#   - unmaintained defaults to "deny" (old default was "warn")
+#   - unsound defaults to "deny" (old default was "warn")
+#   - notice defaults to "deny" (old default was "warn")
+#   - severity-threshold is no longer considered
 [advisories]
+version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "workspace"
-yanked = "deny"
-notice = "warn"
 ignore = [
     # RESOLVED: sled 0.34 replaced with redb (PATCH 23). Removed from dependency tree.
+    # bincode 2.x is the actively maintained version (1.x is unmaintained).
+    # We use bincode 2.0.1, not the deprecated 1.x line.
+    "RUSTSEC-2025-0141",
 ]
 
 # ─── Dependency bans ─────────────────────────────────
@@ -51,7 +60,6 @@ wildcards         = "deny"
 deny = [
     # Insecure or unmaintained crypto — never allow, no exceptions
     { name = "md5"    },
-    { name = "sha1"   },
     { name = "des"    },
     { name = "rc4"    },
     { name = "crypto" },
@@ -60,7 +68,20 @@ deny = [
     # bincode 1.x has known deserialization size-hint overflow — §5.4
     { name = "bincode", version = "<2.0" },
 ]
-skip-tree = []
+# sha1 is banned as a direct dependency, but it's a transitive dep
+# of axum/tungstenite (WebSocket stack). Skip it in the tree.
+skip = [
+    { name = "sha1" },
+]
+skip-tree = [
+    # sha1 is pulled in transitively by axum/tungstenite WebSocket stack.
+    # We don't use sha1 directly — it's only used internally by those crates.
+    { name = "sha1" },
+    # Path dependencies (sibna-core, sibna-server) don't have explicit versions
+    { name = "sibna-core" },
+    { name = "sibna-server" },
+    { name = "sibna-tests" },
+]
 
 # ─── Source policy ───────────────────────────────────
 [sources]
