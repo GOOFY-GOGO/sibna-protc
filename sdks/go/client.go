@@ -91,9 +91,6 @@ func (id *Identity) SignHex(data []byte) string {
 
 // ── Message Padding ──────────────────────────────────────────────────────────
 
-// PaddingBlock is the block size for padding (1 KiB)
-const PaddingBlock = 1024
-
 // PadPayload adds metadata resistance padding to a payload
 func PadPayload(data []byte) ([]byte, error) {
 	unpaddedLen := len(data) + 3 // 2 bytes for padding length + 1 byte for indicator (kept for compat)
