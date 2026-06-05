@@ -57,11 +57,16 @@ async fn run_all_security_audits() {
         root.pop();
     }
 
-    let server_bin = root.join("target").join("debug").join("sibna-server.exe");
-    let test_bin = root
-        .join("target")
-        .join("debug")
-        .join("test_server_audit.exe");
+    let server_bin = root.join("target").join("debug").join(if cfg!(windows) {
+        "sibna-server.exe"
+    } else {
+        "sibna-server"
+    });
+    let test_bin = root.join("target").join("debug").join(if cfg!(windows) {
+        "test_server_audit.exe"
+    } else {
+        "test_server_audit"
+    });
 
     if !server_bin.exists() {
         panic!("Server binary NOT FOUND at: {:?}", server_bin);

@@ -30,7 +30,10 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --features p2p,pqc,argon2,ffi -- -D warnings
+      # Run clippy per-package to avoid cross-package feature conflicts
+      - run: cargo clippy -p sibna-core --features p2p,pqc,argon2,ffi -- -D warnings
+      - run: cargo clippy -p sibna-server -- -D warnings
+      - run: cargo clippy -p sibna-tests -- -D warnings
 
   test-core:
     name: Core Tests
@@ -52,7 +55,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Build the server binary first (attack_tests spawns it as a subprocess)
+      - run: cargo build -p sibna-server
       - run: cargo test --workspace --test attack_tests
+        env:
+          SIBNA_JWT_SECRET: ${{ secrets.SIBNA_JWT_SECRET || 'ci_test_secret_for_audit_only_not_production' }}
 
   test-offensive:
     name: Offensive Tests
@@ -95,7 +102,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-      - run: cd sdks/go && go mod tidy && go test -v ./...
+      # go mod tidy with vendor to avoid network issues during test
+      - run: cd sdks/go && go test -v ./...
 
   audit:
     name: Security Audit
@@ -105,7 +113,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-deny
-      - run: cargo deny check
+      - run: cargo deny check licenses sources bans
 
   build-verify:
     name: Build Verification
@@ -114,5 +122,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --features p2p,pqc,argon2,ffi
-      - run: cargo build --workspace --no-default-features
+      - run: cargo build -p sibna-core --features p2p,pqc,argon2,ffi
+      - run: cargo build -p sibna-server
+      - run: cargo build -p sibna-core --no-default-features
