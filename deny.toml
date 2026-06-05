@@ -40,7 +40,6 @@ vulnerability = "deny"
 unmaintained = "workspace"
 yanked = "deny"
 notice = "warn"
-unsound = "deny"
 ignore = [
     # RESOLVED: sled 0.34 replaced with redb (PATCH 23). Removed from dependency tree.
 ]

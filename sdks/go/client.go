@@ -91,45 +91,51 @@ func (id *Identity) SignHex(data []byte) string {
 
 // ── Message Padding ──────────────────────────────────────────────────────────
 
+// PaddingBlock is the block size for padding (1 KiB)
+const PaddingBlock = 1024
+
 // PadPayload adds metadata resistance padding to a payload
 func PadPayload(data []byte) ([]byte, error) {
-	unpaddedLen := len(data) + 1
+	unpaddedLen := len(data) + 3 // 2 bytes for padding length + 1 byte for indicator (kept for compat)
 	remainder := unpaddedLen % PaddingBlock
 	paddingNeeded := PaddingBlock - remainder
 	if paddingNeeded == 0 {
 		paddingNeeded = PaddingBlock
 	}
 
+	// Store padding length in 2 bytes (big-endian) at positions 1-2
+	// Position 0 is kept as indicator for backward compatibility (lower 8 bits of paddingNeeded)
 	indicator := byte(paddingNeeded % 256)
 	padding := make([]byte, paddingNeeded)
 	if _, err := rand.Read(padding); err != nil {
 		return nil, err
 	}
 
-	out := make([]byte, 1+len(data)+paddingNeeded)
+	out := make([]byte, 3+len(data)+paddingNeeded)
 	out[0] = indicator
-	copy(out[1:], data)
-	copy(out[1+len(data):], padding)
+	out[1] = byte(paddingNeeded >> 8)
+	out[2] = byte(paddingNeeded & 0xFF)
+	copy(out[3:], data)
+	copy(out[3+len(data):], padding)
 
 	return out, nil
 }
 
 // UnpadPayload removes padding from a received payload
 func UnpadPayload(padded []byte) ([]byte, error) {
-	if len(padded) == 0 {
-		return nil, errors.New("empty padded payload")
+	if len(padded) < 3 {
+		return nil, errors.New("padded payload too short")
 	}
-	indicator := padded[0]
+
+	// Read padding length from bytes 1-2 (big-endian)
+	paddingNeeded := int(padded[1])<<8 | int(padded[2])
+
 	paddedLen := len(padded)
-	paddingNeeded := paddedLen % PaddingBlock
-	actualPadding := paddingNeeded
-	if actualPadding == 0 {
-		actualPadding = int(indicator)
-	}
-	if actualPadding >= paddedLen {
+	if paddingNeeded >= paddedLen-3 {
 		return nil, errors.New("invalid padding")
 	}
-	return padded[1 : paddedLen-actualPadding], nil
+
+	return padded[3 : paddedLen-paddingNeeded], nil
 }
 
 // ── Signed Envelope ──────────────────────────────────────────────────────────
