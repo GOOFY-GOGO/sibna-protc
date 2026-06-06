@@ -10,6 +10,7 @@ pub use state::*;
 
 use crate::error::{ProtocolError, ProtocolResult};
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const MAX_SKIPPED_MESSAGES: usize = 2000;
 pub const MAX_MESSAGE_KEY_AGE_SECS: u64 = 86400;
@@ -138,6 +139,22 @@ pub struct SkippedMessageKey {
     pub created_at: u64,
     pub message_number: u64,
 }
+
+impl Drop for SkippedMessageKey {
+    fn drop(&mut self) {
+        // SECURITY FIX: Zeroize secret message key material on drop.
+        // Previously the key bytes remained in heap memory after eviction.
+        self.key.zeroize();
+    }
+}
+
+impl Zeroize for SkippedMessageKey {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for SkippedMessageKey {}
 
 impl SkippedMessageKey {
     pub fn new(key: [u8; 32], message_number: u64) -> Self {

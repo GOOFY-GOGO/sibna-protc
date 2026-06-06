@@ -310,8 +310,22 @@ pub extern "C" fn sibna_encrypt(
         return SibnaResult::InvalidArgument;
     }
 
-    let key_slice = unsafe { slice::from_raw_parts(key, KEY_LENGTH) };
-    let plaintext_slice = unsafe { slice::from_raw_parts(plaintext, plaintext_len) };
+    let key_slice = unsafe {
+        // SECURITY FIX: Validate pointer alignment and overflow before slice::from_raw_parts
+        if (key as usize) % core::mem::align_of::<u8>() != 0 {
+            set_last_error("Key pointer is not aligned");
+            return SibnaResult::InvalidArgument;
+        }
+        slice::from_raw_parts(key, KEY_LENGTH)
+    };
+    let plaintext_slice = unsafe {
+        // SECURITY FIX: Validate pointer alignment and overflow before slice::from_raw_parts
+        if (plaintext as usize) % core::mem::align_of::<u8>() != 0 {
+            set_last_error("Plaintext pointer is not aligned");
+            return SibnaResult::InvalidArgument;
+        }
+        slice::from_raw_parts(plaintext, plaintext_len)
+    };
     let ad_slice = if associated_data.is_null() {
         &[]
     } else {

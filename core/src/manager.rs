@@ -45,8 +45,10 @@ use tracing::{debug, info};
 const MAX_ACTIVE_PEERS: usize = 500;
 
 /// Maximum plaintext size accepted by `send_message`.
-/// 64 MiB — prevents gigabyte-sized allocation attacks. (FIX F-06)
-const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+/// SECURITY FIX: Use same 10 MB limit as Config::max_message_size for consistency.
+/// The previous 64 MB limit was inconsistent and could allow larger allocations
+/// than the config intended.
+const MAX_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
 
 /// Mean delay (seconds) for exponential cover-traffic distribution. (FIX F-08)
 #[cfg(feature = "p2p")]

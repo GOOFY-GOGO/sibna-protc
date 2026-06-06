@@ -10,6 +10,10 @@ const HEADER_KEY_SEED: u8 = 0x03;
 
 #[derive(Serialize, Deserialize)]
 pub struct ChainKey {
+    /// Secret chain key — zeroized on drop via `Drop` impl.
+    /// Clone copies the raw bytes; both the original and clone are zeroized
+    /// independently when dropped. The brief window where both hold the key
+    /// in memory is inherent to cloning and acceptable for in-process use.
     pub key: [u8; 32],
     pub index: u64,
     pub created_at: u64,
@@ -66,7 +70,7 @@ impl ChainKey {
         let next_chain = self.derive_key(CHAIN_KEY_SEED).ok()?;
         self.key.zeroize();
         self.key = next_chain;
-        self.index += 1;
+        self.index = self.index.saturating_add(1);
         Some(message_key)
     }
 

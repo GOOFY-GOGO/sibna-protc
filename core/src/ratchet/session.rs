@@ -9,7 +9,7 @@
 use super::super::crypto::{Encryptor, RatchetKdf, SecureRandom};
 use super::super::error::{ProtocolError, ProtocolResult};
 use super::super::handshake::HandshakeRole;
-use super::super::validation::{validate_associated_data, validate_message};
+use super::super::validation::validate_associated_data;
 use super::{
     ChainKey, DoubleRatchetState, RatchetConfig, RatchetHeader, RatchetMessage,
     ENCRYPTED_HEADER_SIZE,
@@ -153,7 +153,11 @@ impl DoubleRatchetSession {
     }
 
     pub fn encrypt(&self, plaintext: &[u8], associated_data: &[u8]) -> ProtocolResult<Vec<u8>> {
-        validate_message(plaintext).map_err(|_| ProtocolError::InvalidMessage)?;
+        // SECURITY FIX: Use validate_message_for_encrypt to allow empty plaintext
+        // for cover traffic (dummy messages). validate_message rejects empty data,
+        // but cover traffic intentionally sends empty payloads.
+        use crate::validation::validate_message_for_encrypt;
+        validate_message_for_encrypt(plaintext).map_err(|_| ProtocolError::InvalidMessage)?;
         validate_associated_data(associated_data).map_err(|_| ProtocolError::InvalidArgument)?;
 
         let mut state = self.state.write();
@@ -635,7 +639,12 @@ impl Zeroize for DoubleRatchetSession {
 }
 
 impl Drop for DoubleRatchetSession {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        // SECURITY FIX: The empty Drop was overriding ZeroizeOnDrop behavior,
+        // preventing secret key material from being zeroized on drop.
+        // Now explicitly zeroize state on drop.
+        self.zeroize();
+    }
 }
 
 impl ZeroizeOnDrop for DoubleRatchetSession {}

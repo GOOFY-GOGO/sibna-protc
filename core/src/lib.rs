@@ -217,7 +217,7 @@ impl Default for Config {
             message_padding: PaddingMode::Standard,
             relay_url: String::from("https://relay.sibna.dev"),
             proxy_url: None,
-            require_safety_numbers: false,
+            require_safety_numbers: true,
             enable_header_encryption: false,
         }
     }
@@ -571,18 +571,11 @@ impl SecureContext {
                     let sig = Signature::from_bytes(&sig_bytes);
                     vk.verify(&signed_payload, &sig)
                         .map_err(|_| ProtocolError::InvalidSignature)?;
-                } else if self.config.require_safety_numbers {
-                    // In strict mode: reject handshakes where we cannot verify the SPK signature
+                } else {
+                    // SECURITY FIX: Always require SPK signature verification.
+                    // Without this, an active MITM can substitute their own SPK
+                    // and derive the same session key — full message interception.
                     return Err(ProtocolError::HandshakeFailed);
-                }
-                // In non-strict mode without SPK signature: proceed but log a warning
-                // (allows interoperability with older clients during migration)
-                #[cfg(not(test))]
-                if spk_sig_bytes.is_none() {
-                    tracing::warn!(
-                        "perform_handshake: proceeding without SPK signature verification. \
-                         Pass signature in first 64 bytes of prologue for full authentication."
-                    );
                 }
             }
         }
@@ -718,8 +711,11 @@ impl SecureContext {
         let session = sessions.get_session(session_id)?;
         drop(sessions); // release outer lock before acquiring inner state write lock
 
-        // DoubleRatchetSession::encrypt uses internal RwLock::write on state
-        let session_guard = session.read();
+        // SECURITY FIX: Use write() instead of read() to prevent deadlock.
+        // DoubleRatchetSession::encrypt internally acquires state.write().
+        // If two threads both get session.read() then both try state.write(),
+        // parking_lot::RwLock deadlocks. Using session.write() serialises access.
+        let session_guard = session.write();
         let ad = associated_data.unwrap_or_default();
 
         session_guard.encrypt(&padded, ad)
@@ -749,8 +745,11 @@ impl SecureContext {
         let session = sessions.get_session(session_id)?;
         drop(sessions); // release outer lock before acquiring inner state write lock
 
-        // DoubleRatchetSession::decrypt uses internal RwLock::write on state
-        let session_guard = session.read();
+        // SECURITY FIX: Use write() instead of read() to prevent deadlock.
+        // DoubleRatchetSession::decrypt internally acquires state.write().
+        // If two threads both get session.read() then both try state.write(),
+        // parking_lot::RwLock deadlocks. Using session.write() serialises access.
+        let session_guard = session.write();
         let ad = associated_data.unwrap_or_default();
 
         let padded_plaintext = session_guard.decrypt(ciphertext, ad)?;

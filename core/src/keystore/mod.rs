@@ -895,15 +895,30 @@ impl KeyStore {
     /// Load a keystore from disk, decrypting with `encryption_key`.
     ///
     /// Returns `ProtocolError::StorageError` if the file does not exist or is corrupt.
+    ///
+    /// SECURITY FIX: Added a 10MB size limit to prevent OOM denial-of-service
+    /// attacks via symlink or corrupted storage files.
     pub fn load_from_disk(
         path: &std::path::Path,
         encryption_key: &[u8; 32],
     ) -> ProtocolResult<Self> {
         use std::io::Read;
 
-        let mut file = std::fs::File::open(path).map_err(|_| ProtocolError::StorageError)?;
-        let mut data = Vec::new();
-        file.read_to_end(&mut data)
+        const MAX_KEYSTORE_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+
+        let file = std::fs::File::open(path).map_err(|_| ProtocolError::StorageError)?;
+        let file_size = file
+            .metadata()
+            .map_err(|_| ProtocolError::StorageError)?
+            .len();
+        if file_size > MAX_KEYSTORE_FILE_SIZE {
+            return Err(ProtocolError::StorageError);
+        }
+
+        let mut data = Vec::with_capacity(file_size as usize);
+        let mut reader = std::io::BufReader::new(file);
+        reader
+            .read_to_end(&mut data)
             .map_err(|_| ProtocolError::StorageError)?;
 
         Self::from_encrypted_bytes(&data, encryption_key)

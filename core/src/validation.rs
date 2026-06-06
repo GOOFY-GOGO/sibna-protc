@@ -162,6 +162,22 @@ pub fn validate_message(data: &[u8]) -> ValidationResult<()> {
     Ok(())
 }
 
+/// Validate a message for encryption — allows empty plaintext for cover traffic.
+///
+/// Cover traffic (dummy messages) intentionally sends empty payloads to confuse
+/// traffic analyzers. This validation function permits empty data while still
+/// enforcing the maximum size limit.
+pub fn validate_message_for_encrypt(data: &[u8]) -> ValidationResult<()> {
+    if data.len() > limits::MAX_MESSAGE_SIZE {
+        return Err(ValidationError::TooLong {
+            max: limits::MAX_MESSAGE_SIZE,
+            actual: data.len(),
+        });
+    }
+
+    Ok(())
+}
+
 /// Validate a ciphertext
 pub fn validate_ciphertext(data: &[u8]) -> ValidationResult<()> {
     if data.is_empty() {

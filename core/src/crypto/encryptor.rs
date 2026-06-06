@@ -55,6 +55,16 @@ impl Encryptor {
             return Err(CryptoError::InvalidKeyLength);
         }
 
+        // SECURITY FIX: Validate that the key is not weak (all zeros or repeating pattern).
+        // Previously Encryptor::new accepted weak keys that could be brute-forced.
+        if crate::crypto::constant_time_is_zero(key) {
+            return Err(CryptoError::InvalidKeyLength);
+        }
+        let half = key.len() / 2;
+        if crate::crypto::constant_time_eq(&key[..half], &key[half..]) {
+            return Err(CryptoError::InvalidKeyLength);
+        }
+
         // SIBNA-2026-017: pin the key in physical RAM. The cipher
         // instance is initialised from a transient copy; once the
         // Encryptor is built, the long-lived `_key` field is the
@@ -71,7 +81,11 @@ impl Encryptor {
             _key: key_buf,
             max_message_number: initial_message_number,
             seen_numbers: std::collections::HashMap::new(),
-            max_seen_numbers: 1000,
+            // SECURITY FIX: Increased from 1000 to 100000 to prevent replay
+            // attacks via memory exhaustion flooding. The old value of 1000 was
+            // too small — an attacker could flood with 1000+ messages to evict
+            // legitimate replay-protection state.
+            max_seen_numbers: 100_000,
         })
     }
 
@@ -241,6 +255,13 @@ impl Encryptor {
     }
 
     // Evict by age first, then fall back to size cap.
+    //
+    // SECURITY FIX: The previous size backstop evicted the oldest entries by
+    // timestamp, which could remove legitimate replay-protection state.
+    // An attacker could flood with recent messages to push out earlier entries,
+    // then replay the evicted messages. Now we only evict entries that are
+    // older than MAX_MESSAGE_AGE_SECS (already expired from replay protection).
+    // The size cap is a memory backstop only and never evicts valid entries.
     fn update_seen_numbers(&mut self, message_number: u64, timestamp: u64) {
         if message_number > self.max_message_number {
             self.max_message_number = message_number;
@@ -256,15 +277,16 @@ impl Encryptor {
         let cutoff = now.saturating_sub(MAX_MESSAGE_AGE_SECS);
         self.seen_numbers.retain(|_, &mut ts| ts >= cutoff);
 
-        // Size backstop: keep newest entries when still over cap after age eviction.
+        // Memory backstop: if still over cap after age eviction, log a warning
+        // but do NOT evict entries — they are still within the valid replay window.
+        // Evicting them would allow replay attacks.
         if self.seen_numbers.len() > self.max_seen_numbers {
-            let mut entries: Vec<(u64, u64)> =
-                self.seen_numbers.iter().map(|(&k, &v)| (k, v)).collect();
-            entries.sort_unstable_by_key(|&(_, ts)| ts);
-            let to_remove = entries.len() - self.max_seen_numbers;
-            for (k, _) in entries.into_iter().take(to_remove) {
-                self.seen_numbers.remove(&k);
-            }
+            tracing::warn!(
+                "Encryptor seen_numbers ({}) exceeded max_seen_numbers ({}). \
+                 Consider increasing max_seen_numbers to prevent memory exhaustion.",
+                self.seen_numbers.len(),
+                self.max_seen_numbers,
+            );
         }
     }
 
@@ -335,7 +357,7 @@ impl StreamingEncryptor {
             // Write encrypted chunk
             result.extend_from_slice(&encrypted);
 
-            self.chunk_counter += 1;
+            self.chunk_counter = self.chunk_counter.saturating_add(1);
         }
 
         Ok(result)
@@ -378,7 +400,7 @@ impl StreamingEncryptor {
 
             result.extend_from_slice(&chunk);
             offset += chunk_len;
-            self.chunk_counter += 1;
+            self.chunk_counter = self.chunk_counter.saturating_add(1);
         }
 
         Ok(result)
@@ -389,16 +411,25 @@ impl StreamingEncryptor {
 mod tests {
     use super::*;
 
+    /// Test key: non-zero, non-repeating pattern (passes weak key validation).
+    fn test_key() -> [u8; 32] {
+        let mut key = [0u8; 32];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_add(1);
+        }
+        key
+    }
+
     #[test]
     fn test_encryptor_creation() {
-        let key = [0x42u8; 32];
+        let key = test_key();
         let encryptor = Encryptor::new(&key, 0);
         assert!(encryptor.is_ok());
     }
 
     #[test]
     fn test_encryption_roundtrip() {
-        let key = [0x42u8; 32];
+        let key = test_key();
         let mut encryptor = Encryptor::new(&key, 0).unwrap();
 
         let plaintext = b"Hello, World!";
@@ -412,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_message_number_increment() {
-        let key = [0x42u8; 32];
+        let key = test_key();
         let mut encryptor = Encryptor::new(&key, 0).unwrap();
 
         assert_eq!(encryptor.message_number(), 0);
@@ -426,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_replay_detection() {
-        let key = [0x42u8; 32];
+        let key = test_key();
         let mut encryptor = Encryptor::new(&key, 0).unwrap();
 
         let plaintext = b"Hello, World!";
@@ -446,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_wrong_associated_data() {
-        let key = [0x42u8; 32];
+        let key = test_key();
         let mut encryptor = Encryptor::new(&key, 0).unwrap();
 
         let plaintext = b"Hello, World!";
@@ -460,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_streaming_encryptor() {
-        let key = [0x42u8; 32];
+        let key = test_key();
         let mut encryptor = StreamingEncryptor::new(&key).unwrap();
 
         let data = vec![0xABu8; 1024 * 1024 * 2]; // 2MB
@@ -480,8 +511,16 @@ mod tests {
     }
 
     #[test]
+    fn test_weak_key_rejected() {
+        // All zeros
+        assert!(Encryptor::new(&[0u8; 32], 0).is_err());
+        // All same byte (repeating pattern)
+        assert!(Encryptor::new(&[0x42u8; 32], 0).is_err());
+    }
+
+    #[test]
     fn test_empty_plaintext() {
-        let key = [0x42u8; 32];
+        let key = test_key();
         let mut encryptor = Encryptor::new(&key, 0).unwrap();
 
         let result = encryptor.encrypt_message(b"", b"ad");
